@@ -1,0 +1,15 @@
+Analyze these LinkedIn posts and return ONLY a JSON object:
+{
+  "current_role": "<ask the user, do not guess>",
+  "avg_length_words": <int>,
+  "hook_archetypes": ["<3-5 patterns, e.g. 'opens with a specific number'>"],
+  "line_style": "<how line breaks are used>",
+  "sentence_rhythm": "<short/long mix>",
+  "emoji_use": "<frequency and placement>",
+  "hashtag_use": "<count and style>",
+  "cta_style": "<how posts end>",
+  "vocab_notes": "<characteristic words, avoided words>",
+  "tone": "<2-3 adjectives>"
+}
+POSTS:
+{posts}

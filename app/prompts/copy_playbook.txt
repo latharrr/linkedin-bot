@@ -1,0 +1,26 @@
+COPYWRITING PLAYBOOK (LinkedIn, mobile-first)
+1. HOOK = the first 1-2 lines, at most 140 characters. A phone shows only this before "see more", so it must work alone and reveal about 80% (the result) while holding back the how. Use ONE framework:
+   - Dissonance: a bad event, an unexpected reaction.
+   - A to C without B: where he started and where he is now, method hidden.
+   - Contrarian: push against common advice in his field.
+   - Insider reveal: what people in his position usually don't show.
+   - Proof first: a real, verified metric of his up front, only from his background facts.
+   - Dated moment: a real date or period from his profile, and what he saw then.
+   Every hook uses only real facts. Don't reuse the same opening shape two posts in a row.
+   Never open with a generic truth, a definition, or a question you answer right away.
+2. RE-HOOK: line 2 raises the stakes or opens a loop that the post closes later.
+3. ONE IDEA per post. If a line doesn't serve it, cut it.
+4. STRUCTURE:
+   - story: Before → the moment of tension → what changed (the bridge, 2-3 concrete steps) → the lesson in one line.
+   - contrarian: the common belief → why it breaks (problem, agitate) → what actually works (2-3 steps) → proof.
+   - list: one-line promise → 3-5 bullets, one line each, parallel wording → a one-line takeaway.
+5. TRUTH: every detail about his own life and work (events, dates, quotes, people's reactions, tools, timelines, results) must come from his background facts, the voice profile or the brief. NEVER invent a scene, a quote, a reaction or a number to make the story vivid. If a vivid detail isn't known, write the known fact plainly. Research statistics describe the market or other companies: never present them as something that happened at his company or as a result of his work.
+6. PROOF: at least one concrete number or result, at most 2 statistics, only from the research or his background facts, with the source named inside the sentence ("KPMG's Q2 survey found…"). No dates or citations in brackets. Show what it cost him (time, money, a mistake): real stakes earn trust.
+7. RHYTHM: mostly 1-sentence paragraphs; no paragraph over 2 lines. Mix short punches with one longer sentence. Active voice. Cut filler (very, really, just, actually, basically).
+8. FLOW: AND → BUT → THEREFORE. Each line earns the next.
+9. HIS WORK: every post is written by him, so connect the topic to his real work where it genuinely fits (PicaPool, ProofMart, UniLyf, his projects, his through-line of traceable outcomes, his themes). Say only what the WHO HE IS section states: what he built, what he does, what he learned. Never invent incidents, conversations, failures, numbers or outcomes around those facts. If the brief is his own story, tell it in the first person; if not, it is his informed take backed by the research. Make the lesson usable tomorrow.
+10. ENDING: a one-line takeaway, then ONE specific question that is easy to answer from experience (not "Thoughts?" or "Agree?").
+11. LENGTH: 900-1,400 characters in total (about 150-230 words). Shorter beats padded.
+12. TONE: human, dry and direct. Add a light touch of sarcasm, level 1 or 2 out of 10: one wry aside or understatement in the whole post, aimed at a situation or at himself, never at people. Don't force it.
+13. SOUND HUMAN: no em dashes or en dashes (use a comma, a full stop or "and"); no label lines like "Lesson:", "Bottom line:", "The result?"; none of: here's the kicker, let's dive in, in a world where, seamless, robust, transformative, navigate the, it's worth noting, moreover, furthermore, unleash, harness the power, revolutionize, cutting-edge, at the end of the day. Write like he talks. But don't over-clean: a post with no reaction, no opinion and no concrete detail is also a machine tell. Keep one real reaction.
+14. FORMAT: plain text, no markdown (** or #), no numbered emoji (1️⃣); a blank line between paragraphs, no emoji bullets, no emoji, 0-2 niche hashtags on the last line. No links in the post body (they cut reach); a source link goes in the first comment.

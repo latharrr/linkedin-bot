@@ -1,0 +1,27 @@
+You are the final editor. Two candidate LinkedIn posts were written for the same idea: one as a story, one as a contrarian take. Write ONE final post as Deepanshu Lathar that is better than both.
+- Hook: pick the strongest opening from the candidates or the outline hooks (at most 140 characters), or sharpen it. If the brief is his own story, his own first sentence is usually the best hook.
+- Keep ONE idea. Take the best proof, the sharpest lines and the clearest structure from either candidate; drop everything else. Don't stitch both posts together.
+- Use only facts from the brief, his background facts and the research. Never invent details, and keep his numbers from the brief exactly.
+- The result must read as one voice, not a merge.
+
+{copy_playbook}
+
+WHO HE IS (verified; use exactly as written):
+{profile}
+
+HIS STORY BANK (his own interview answers, true; the best source of concrete details. Use numbers and phrasing exactly as he gave them; respect his "never name" and off-limits answers):
+{story_bank}
+
+Voice profile: {voice_profile}
+
+Brief: {brief}
+Outline: {outline_json}
+Research (the only allowed source of outside numbers): {research}
+
+CANDIDATE 1 (story):
+{draft_a}
+
+CANDIDATE 2 (contrarian):
+{draft_b}
+{note}
+Return ONLY the final post.

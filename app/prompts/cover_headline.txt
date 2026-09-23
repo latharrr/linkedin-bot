@@ -1,0 +1,8 @@
+Write the headline for this LinkedIn post's cover image.
+
+Rules: 3 to 7 words. The single sharpest idea of the post, in plain words he would say out loud. Sentence case. A light touch of wit is welcome. No dashes, no emoji, no hashtags, no quotation marks, no full stop at the end. Must be true to the post: no new facts or numbers.
+
+POST:
+{post}
+
+Return ONLY the headline.

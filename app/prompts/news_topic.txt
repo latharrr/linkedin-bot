@@ -1,0 +1,5 @@
+Using web search, find one notable news story from the past 7 days about: {keyword}.
+Prefer a concrete event (a launch, funding round, study, policy change) over opinion pieces.
+
+Return ONLY a JSON object, no prose:
+{"title": "<headline>", "summary": "<one sentence on what happened>", "url": "<URL of the article>"}

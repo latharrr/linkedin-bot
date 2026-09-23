@@ -1,0 +1,20 @@
+Brief: {brief}
+Research (facts with sources, use ONLY these for any number you cite): {research}
+Recently covered (find a fresh angle if related): {recent_topics}
+Similar past posts (match cadence, not content): {few_shot_posts}
+Voice: {voice_profile}
+
+Before writing anything, pin down: the ONE idea; one concrete metric (from the research or his background facts only); one counter-intuitive insight; a 2-3 step mechanism (how it actually works); a closing question.
+Hooks and details about him use ONLY his background facts, the voice profile or the brief: never invent a scene, quote, reaction or number.
+Then write three hooks, each from a DIFFERENT framework (dissonance / A to C without B / contrarian / insider reveal / proof first / dated moment), each at most 140 characters and able to stand alone above "see more".
+
+Return ONLY JSON:
+{"insight": "<the one idea, one sentence>",
+ "metric": "<one concrete number or result, with its source>",
+ "counter_intuitive": "<what most people get wrong here>",
+ "mechanism": ["<step 1>", "<step 2>", "<step 3 (optional)>"],
+ "hooks": ["<hook 1, ≤140 chars>", "<hook 2, different framework>", "<hook 3, different framework>"],
+ "audience": "<who this is for>",
+ "sub_template": "<one of: story_cold_open, story_failure_first, story_dialogue, contrarian_myth_bust, contrarian_teardown, insight_list>",
+ "angle_note": "<what makes this different from the recent topics>",
+ "cta_question": "<one specific, easy-to-answer closing question>"}

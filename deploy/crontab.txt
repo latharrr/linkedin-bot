@@ -1,0 +1,11 @@
+# SPEC §3 schedule. Install as the service user:  crontab deploy/crontab.txt
+# Paths assume the repo lives at /opt/linkedin-bot with a venv in .venv.
+# CRON_TZ works with cronie (RHEL/Fedora/Arch). Debian/Ubuntu cron ignores it:
+# there, run `sudo timedatectl set-timezone Asia/Kolkata` instead (see README).
+CRON_TZ=Asia/Kolkata
+SHELL=/bin/bash
+
+*/5 * * * *  cd /opt/linkedin-bot && flock -n /tmp/linkedin-dispatcher.lock .venv/bin/python dispatcher.py >> logs/dispatcher.log 2>&1
+0 8 * * *    cd /opt/linkedin-bot && .venv/bin/python bot.py --nudge >> logs/cron.log 2>&1
+0 14 * * *   cd /opt/linkedin-bot && .venv/bin/python bot.py --fallback >> logs/cron.log 2>&1
+0 9 * * 1    cd /opt/linkedin-bot && .venv/bin/python bot.py --token-check >> logs/cron.log 2>&1

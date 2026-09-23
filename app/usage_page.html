@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot Usage</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #14171c; --muted: #5d6673; --line: #e3e6ea;
+    --track: #edf0f3; --ok: #1f9d55; --warn: #c7811b; --err: #d0453b; --off: #9aa3ad; --accent: #3b6fd8;
+    --ok-bg: #e7f6ee; --warn-bg: #fdf3e2; --err-bg: #fcebea; --off-bg: #f0f2f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --panel: #171b21; --ink: #e8ebef; --muted: #98a2ae; --line: #262c34;
+      --track: #232a33; --ok: #3cc47c; --warn: #e3a547; --err: #ee6a5f; --off: #6c7680; --accent: #7aa2ff;
+      --ok-bg: #15291f; --warn-bg: #2d2415; --err-bg: #311a18; --off-bg: #1e232a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { max-width: 1180px; margin: 0 auto; padding: 28px 16px 8px; display: flex; flex-wrap: wrap;
+           align-items: flex-end; justify-content: space-between; gap: 12px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13.5px; }
+  button { font: inherit; font-size: 13.5px; padding: 7px 14px; border-radius: 8px; cursor: pointer;
+           border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+  button:hover { border-color: var(--accent); }
+  .summary { max-width: 1180px; margin: 0 auto; padding: 8px 16px 0; display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip { font-size: 12.5px; padding: 4px 10px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); }
+  main { max-width: 1180px; margin: 0 auto; padding: 16px; display: grid; gap: 14px;
+         grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 16px 14px;
+          display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+  .name { font-weight: 650; font-size: 16px; }
+  .role { color: var(--muted); font-size: 13px; }
+  .pill { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+  .pill.ok { color: var(--ok); background: var(--ok-bg); } .pill.warn { color: var(--warn); background: var(--warn-bg); }
+  .pill.error { color: var(--err); background: var(--err-bg); } .pill.off, .pill.idle { color: var(--off); background: var(--off-bg); }
+  .meter .row { display: flex; justify-content: space-between; gap: 8px; font-size: 13.5px; }
+  .meter .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .bar { height: 8px; border-radius: 99px; background: var(--track); overflow: hidden; margin: 6px 0 4px; }
+  .fill { height: 100%; border-radius: 99px; background: var(--ok); transition: width .4s ease; }
+  .fill.warn { background: var(--warn); } .fill.error { background: var(--err); }
+  .meta { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
+  .src { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px; border-radius: 4px;
+         border: 1px solid var(--line); }
+  dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; }
+  dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
+  .err { font-size: 12.5px; color: var(--err); background: var(--err-bg); border-radius: 8px; padding: 8px 10px;
+         overflow-wrap: anywhere; }
+  .empty { color: var(--muted); font-size: 13px; }
+  .banner { max-width: 1180px; margin: 12px auto 0; padding: 10px 14px; border-radius: 10px; font-size: 13.5px;
+            background: var(--err-bg); color: var(--err); display: none; }
+  footer { max-width: 1180px; margin: 0 auto; padding: 4px 16px 32px; color: var(--muted); font-size: 12.5px; }
+  @media (max-width: 420px) { main { grid-template-columns: 1fr; } header { padding-top: 20px; } }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>API &amp; resource usage</h1>
+    <div class="sub" id="updated">Loading…</div>
+  </div>
+  <button id="refresh" type="button">Refresh now</button>
+</header>
+<div class="summary" id="summary"></div>
+<div class="banner" id="banner"></div>
+<main id="cards"></main>
+<footer>
+  Sources — <b>live</b>: asked from the provider now · <b>headers</b>: rate-limit headers on the bot's latest call ·
+  <b>ledger</b>: the bot's own call log (last 24 h) · <b>estimate</b>: derived where the provider exposes nothing.
+  Refreshes every 60 s. Keys never leave the local server.
+</footer>
+<script>
+const STATUS = { ok: "OK", warn: "Near limit", error: "Problem", idle: "No calls yet", off: "Not set up" };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function fmt(value, unit) {
+  if (value === null || value === undefined) return "—";
+  if (unit === "bytes") {
+    const u = ["B", "KB", "MB", "GB"]; let v = value, i = 0;
+    while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+    return `${v.toFixed(v < 10 && i ? 1 : 0)} ${u[i]}`;
+  }
+  const n = Number(value).toLocaleString();
+  return unit && unit !== "req" && unit !== "tokens" && unit !== "credits" ? `${n} ${unit}` : n;
+}
+
+function meterHtml(m) {
+  const hasLimit = m.limit !== null && m.limit !== undefined && m.limit > 0;
+  const pct = hasLimit ? Math.min(100, Math.round(((m.used || 0) / m.limit) * 100)) : 0;
+  const cls = pct >= 90 ? "error" : pct >= 70 ? "warn" : "";
+  const unitWord = m.unit && m.unit !== "bytes" ? ` ${m.unit}` : "";
+  const numbers = hasLimit
+    ? `${fmt(m.used, m.unit)} / ${fmt(m.limit, m.unit)}${unitWord}`
+    : `${fmt(m.used, m.unit)}${unitWord}`;
+  const left = hasLimit ? `${fmt(Math.max(m.limit - (m.used || 0), 0), m.unit)}${unitWord} left` : "";
+  return `<div class="meter">
+    <div class="row"><span>${esc(m.label)}</span><span class="num">${esc(numbers)}</span></div>
+    ${hasLimit ? `<div class="bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div class="fill ${cls}" style="width:${pct}%"></div></div>` : ""}
+    <div class="meta"><span class="src">${esc(m.source)}</span>${left ? `<span>${esc(left)} · ${pct}% used</span>` : ""}${m.note ? `<span>· ${esc(m.note)}</span>` : ""}</div>
+  </div>`;
+}
+
+function cardHtml(c) {
+  const meters = (c.meters || []).map(meterHtml).join("");
+  const facts = (c.facts || []).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
+  return `<section class="card" aria-label="${esc(c.name)}">
+    <div class="top"><div><div class="name">${esc(c.name)}</div><div class="role">${esc(c.role)}</div></div>
+      <span class="pill ${esc(c.status)}">${STATUS[c.status] || esc(c.status)}</span></div>
+    ${meters || ""}
+    ${facts ? `<dl>${facts}</dl>` : ""}
+    ${!meters && !facts ? `<div class="empty">No usage recorded yet.</div>` : ""}
+    ${c.last_error ? `<div class="err">Last error: ${esc(c.last_error)}</div>` : ""}
+  </section>`;
+}
+
+function ago(iso) {
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000));
+  return s < 60 ? `${s}s ago` : `${Math.round(s / 60)} min ago`;
+}
+
+let lastData = null;
+async function load(force) {
+  $("refresh").disabled = true;
+  try {
+    const r = await fetch(`/api/usage${force ? "?refresh=1" : ""}`, { cache: "no-store" });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    lastData = data;
+    $("cards").innerHTML = data.cards.map(cardHtml).join("");
+    const counts = data.cards.reduce((a, c) => ((a[c.status] = (a[c.status] || 0) + 1), a), {});
+    $("summary").innerHTML = ["ok", "warn", "error", "idle", "off"].filter((k) => counts[k])
+      .map((k) => `<span class="chip">${counts[k]} ${STATUS[k].toLowerCase()}</span>`).join("");
+    const b = $("banner");
+    if (data.ledger_error) { b.textContent = `Call ledger unavailable (${data.ledger_error}) — run scripts/usage.sql.`; b.style.display = "block"; }
+    else b.style.display = "none";
+    tick();
+  } catch (e) {
+    const b = $("banner"); b.textContent = `Could not load usage: ${e.message}`; b.style.display = "block";
+  } finally { $("refresh").disabled = false; }
+}
+function tick() { if (lastData) $("updated").textContent = `Updated ${ago(lastData.generated_at)} · ${lastData.cards.length} services`; }
+$("refresh").addEventListener("click", () => load(true));
+load(false);
+setInterval(() => load(false), 60000);
+setInterval(tick, 10000);
+</script>
+</body>
+</html>

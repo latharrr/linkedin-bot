@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+out/
+logs/*.log
+seed_posts.jsonl
+.pytest_cache/
+# personal data: his posts with private impression counts
+seed_posts_feed.jsonl

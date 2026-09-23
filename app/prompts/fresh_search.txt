@@ -1,0 +1,4 @@
+Find the latest facts and statistics ({prev_year} to {year}) relevant to this LinkedIn post idea:
+{brief}
+
+Give up to 6 specific facts as a numbered list. Each item states the number, who measured it, and when, and cites its source. Prefer primary sources (surveys, reports, official announcements, company engineering blogs) from the last 12 months. Skip anything you can't source.
