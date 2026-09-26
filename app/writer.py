@@ -91,12 +91,33 @@ def parse_json_object(text: str) -> dict[str, Any]:
     if start == -1 or end <= start:
         raise WriterError("model did not return a JSON object")
     try:
-        data = json.loads(text[start : end + 1])
+        # raw_decode stops at the end of the first object, so a stray trailing "}" or
+        # commentary after the JSON (gpt-oss does both) doesn't sink an otherwise good reply.
+        data, _ = json.JSONDecoder().raw_decode(text[start:])
     except json.JSONDecodeError as exc:
         raise WriterError(f"model returned invalid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise WriterError("model JSON is not an object")
     return data
+
+
+def _salvage_chat_json(text: str) -> dict[str, Any]:
+    """Chat output that isn't valid JSON: pull out the reply / tool_call fields if they're
+    there, otherwise treat the text as the reply minus stray JSON punctuation. Never raw
+    JSON in front of him, and never a draft_topic from a malformed answer."""
+    out: dict[str, Any] = {}
+    call = re.search(r'"tool_call"\s*:\s*"(\w+)"', text)
+    if call:
+        out["tool_call"] = call.group(1)
+    reply = re.search(r'"reply"\s*:\s*"((?:[^"\\]|\\.)*)"', text, re.DOTALL)
+    if reply:
+        try:
+            out["reply"] = json.loads(f'"{reply.group(1)}"')
+        except json.JSONDecodeError:
+            out["reply"] = reply.group(1)
+    elif not call:
+        out["reply"] = text.strip().strip("{}").strip()
+    return out
 
 
 def unbold(text: str) -> str:
@@ -447,7 +468,7 @@ class Writer:
             try:
                 data = parse_json_object(text)
             except WriterError:
-                return {"reply": text, "draft_topic": None}
+                data = _salvage_chat_json(text)
             call = data.get("tool_call")
             tool = tools.get(call) if tools and isinstance(call, str) else None
             if tool is not None:

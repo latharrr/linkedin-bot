@@ -396,3 +396,47 @@ async def test_scene_writer_returns_both_versions():
     w = Writer(nv.client(), "m", 0.8)
     scenes = await w.image_scene("post", "insight")
     assert len(scenes) == 2 and scenes[1].startswith("A laptop and a whiteboard")
+
+
+def test_parse_json_object_ignores_trailing_brace():
+    assert parse_json_object('{"reply": "hi", "draft_topic": null}}') == {"reply": "hi", "draft_topic": None}
+
+
+class _ScriptedChat:
+    """Chat client that returns canned model outputs, one per call."""
+
+    def __init__(self, outputs):
+        self.outputs = list(outputs)
+        self.calls = 0
+
+    async def chat(self, model, messages, **kw):
+        from types import SimpleNamespace
+
+        out = self.outputs[min(self.calls, len(self.outputs) - 1)]
+        self.calls += 1
+        return SimpleNamespace(text=out)
+
+
+@pytest.mark.parametrize(
+    "raw, reply",
+    [
+        ('{"reply": "Try the pricing angle.", "draft_topic": null}}', "Try the pricing angle."),
+        ('{"reply": "Try the \\"pricing\\" angle.", "draft_topic": null', 'Try the "pricing" angle.'),
+        ("Try the pricing angle.\n}", "Try the pricing angle."),
+    ],
+)
+def test_converse_never_leaks_json(raw, reply):
+    out = asyncio.run(Writer(_ScriptedChat([raw]), "m", 0.8).converse([{"role": "user", "content": "idea?"}], {}))
+    assert out == {"reply": reply, "draft_topic": None}
+
+
+def test_converse_runs_tool_from_malformed_json():
+    client = _ScriptedChat(['{"tool_call": "queue", "reply": null', '{"reply": "Two posts queued.", "draft_topic": null}'])
+    seen = []
+
+    async def queue():
+        seen.append(1)
+        return "2 scheduled"
+
+    out = asyncio.run(Writer(client, "m", 0.8).converse([{"role": "user", "content": "what's queued"}], {}, tools={"queue": queue}))
+    assert seen == [1] and out["reply"] == "Two posts queued."
