@@ -427,7 +427,7 @@ class _ScriptedChat:
 )
 def test_converse_never_leaks_json(raw, reply):
     out = asyncio.run(Writer(_ScriptedChat([raw]), "m", 0.8).converse([{"role": "user", "content": "idea?"}], {}))
-    assert out == {"reply": reply, "draft_topic": None}
+    assert out == {"reply": reply, "draft_topic": None, "action": None}
 
 
 def test_converse_runs_tool_from_malformed_json():

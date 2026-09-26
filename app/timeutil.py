@@ -55,6 +55,33 @@ def custom_time(text: str, now: datetime) -> datetime | None:
     return next_ist_occurrence(parsed[0], parsed[1], now)
 
 
+_AMPM = re.compile(r"^\s*(1[0-2]|0?[1-9])(?:[:.]([0-5]\d))?\s*([ap])\.?m\.?\s*$", re.IGNORECASE)
+_DATED = re.compile(r"^\s*(\d{4})-(\d{2})-(\d{2})[ T]+(.+)$")
+MAX_AHEAD = timedelta(days=60)
+
+
+def parse_when(text: str, now: datetime) -> datetime | None:
+    """A posting time the chat model wrote, in IST: '18:30', '6pm', '8:15 am', or with a
+    date, '2026-09-29 08:00' / '2026-09-29 8am'. Without a date it's the next such time;
+    with one it must be in the future and within MAX_AHEAD. Anything else -> None."""
+    _require_aware(now)
+    dated = _DATED.match(text or "")
+    clock = dated.group(4) if dated else (text or "")
+    hm = parse_hhmm(clock)
+    if hm is None and (m := _AMPM.match(clock)):
+        hm = (int(m.group(1)) % 12 + (12 if m.group(3).lower() == "p" else 0), int(m.group(2) or 0))
+    if hm is None:
+        return None
+    if not dated:
+        return next_ist_occurrence(hm[0], hm[1], now)
+    try:
+        day = datetime(int(dated.group(1)), int(dated.group(2)), int(dated.group(3)), hm[0], hm[1], tzinfo=IST)
+    except ValueError:
+        return None
+    when = day.astimezone(UTC)
+    return when if now < when <= now + MAX_AHEAD else None
+
+
 def ist_day_start(now: datetime) -> datetime:
     """Midnight of the current IST date, as a UTC instant (SPEC §5.4 --fallback)."""
     _require_aware(now)

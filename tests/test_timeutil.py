@@ -10,6 +10,7 @@ from app.timeutil import (
     next_9am,
     parse_hhmm,
     parse_ts,
+    parse_when,
 )
 
 
@@ -101,3 +102,23 @@ def test_parse_ts():
     assert parse_ts("2026-09-22T10:00:00Z") == datetime(2026, 9, 22, 10, tzinfo=UTC)
     assert parse_ts("2026-09-22T10:00:00") == datetime(2026, 9, 22, 10, tzinfo=UTC)
     assert parse_ts(None) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("18:30", ist(2026, 9, 22, 18, 30)),
+        ("6pm", ist(2026, 9, 22, 18, 0)),
+        ("8:15 am", ist(2026, 9, 23, 8, 15)),  # already past today: tomorrow
+        ("12am", ist(2026, 9, 23, 0, 0)),
+        ("2026-09-29 08:00", ist(2026, 9, 29, 8, 0)),
+        ("2026-09-29 9am", ist(2026, 9, 29, 9, 0)),
+    ],
+)
+def test_parse_when_ok(text, expected):
+    assert parse_when(text, ist(2026, 9, 22, 10, 0)) == expected
+
+
+@pytest.mark.parametrize("text", ["", "soon", "25:00", "13pm", "2026-09-21 08:00", "2026-13-01 08:00", "2027-09-29 08:00"])
+def test_parse_when_rejects_garbage_past_and_far_future(text):
+    assert parse_when(text, ist(2026, 9, 22, 10, 0)) is None

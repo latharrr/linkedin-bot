@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import re
+import secrets
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -78,6 +79,7 @@ from app.timeutil import (
     next_9am,
     next_ist_occurrence,
     parse_ts,
+    parse_when,
     utcnow,
 )
 from app.verify import unverified_numbers
@@ -95,7 +97,8 @@ HELP = (
     "• make a post about <topic>   • draft: <topic>\n"
     "• paste a link + \"something on this?\"\n"
     "• make a post — I'll ask what about (\"you pick\" = today's news)\n"
-    "Or just ask: \"what's queued\", \"any drafts waiting\", \"how's usage looking\", \"what should I post about\".\n\n"
+    "Or just ask: \"what's queued\", \"any drafts waiting\", \"how's usage looking\", \"what should I post about\".\n"
+    "Or tell me: \"schedule it for 6pm\", \"move it to Friday 9am\", \"unschedule it\", \"make it shorter\" (I'll ask ✅ first).\n\n"
     "I research it with every source (Groq browsing, Bright Data, Tavily, NewsData), write\n"
     "two versions behind the scenes, and send you ONE final post with one image. Under it:\n"
     "✂️ Shorter · 🎣 New hook · 🔥 Bolder · ✅ Post this · ✏️ Edit\n"
@@ -140,6 +143,22 @@ BOT_COMMANDS = [
 # Answered even while a reply is pending (e.g. mid-edit): they read, they never write drafts.
 QUICK_COMMANDS = ("/start", "/help", "/new", "/status", "/ideas", "/drafts", "/queue", "/dashboard", "/interview", "/bank", "/comment")
 IDEAS = 3
+# Chat actions (step 3): which post statuses each can act on. CONFIRMED ones touch the
+# publish path or throw work away, so the model only proposes them and he taps ✅.
+ACTION_STATUSES: dict[str, tuple[str, ...]] = {
+    "schedule": ("awaiting_choice",),
+    "reschedule": ("queued",),
+    "unschedule": ("queued",),
+    "discard": ("awaiting_choice", "queued"),
+    "tune": ("awaiting_choice",),
+    "new_image": ("awaiting_choice",),
+    "show": ("awaiting_choice",),
+}
+CONFIRMED = {"schedule", "reschedule", "unschedule", "discard"}
+RELATIVE_TIMES = {"now": NOW_DELAY, "30m": timedelta(minutes=30)}
+MAX_CHOICES = 5
+REF_TAG = re.compile(r"[ \t]*[\[(]?\bref[:\s]+[0-9a-f]{6,}[\])]?", re.IGNORECASE)
+WHEN_HINT = "When should it go out? e.g. 6pm, 18:30, or 2026-09-29 08:00 (IST)."
 TUNE_LABELS = {"short": "✂️ Shortening", "hook": "🎣 Rewriting the hook of", "bold": "🔥 Sharpening"}
 ASK_TOPIC = "What should the post be about? Send a topic or a link — or say \"you pick\" and I'll draft from today's news."
 CHAT_DOWN = "I couldn't reach the chat model just now. To start drafts anyway, say: make a post about <topic>."
@@ -189,6 +208,24 @@ class ActiveRun:
     task: asyncio.Task[Any] | None = field(default=None, repr=False)
 
 
+@dataclass
+class PendingAction:
+    """A chat-proposed change waiting for his ✅. One per chat: a newer proposal replaces
+    it, so the older message's buttons answer "Expired"."""
+
+    nonce: str
+    name: str
+    post_id: str
+    when_spec: str | None = None
+    when: datetime | None = None
+    draft: str | None = None
+
+
+def post_ref(post: Post) -> str:
+    """Short id the chat model can hand back in an action (a uuid prefix)."""
+    return post.id[:8]
+
+
 # ── handler ──────────────────────────────────────────────────────────────────
 class BotHandler:
     def __init__(self, svc: Services, now: Callable[[], datetime] = utcnow) -> None:
@@ -203,6 +240,8 @@ class BotHandler:
         self.ideas: dict[int, list[str]] = {}  # last /ideas per chat, for the ✍️ Draft buttons
         self.interviews: dict[int, dict[str, Any]] = {}  # chat → {"qid", "pressed", "skipped", "answered"}
         self.active_runs: dict[int, ActiveRun] = {}  # chat → the draft generating right now, if any
+        self.pending: dict[int, PendingAction] = {}  # chat → the chat action awaiting ✅ / ✖
+        self.choosing: dict[int, tuple[str, dict[str, Any], list[str]]] = {}  # chat → (nonce, action, post ids) awaiting a pick
 
     def spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         task = asyncio.create_task(coro)
@@ -319,10 +358,10 @@ class BotHandler:
             if status == "queued":
                 first = (post.draft(post.chosen or "a").strip().splitlines() or [""])[0][:90]
                 when = format_ist(post.scheduled_at) if post.scheduled_at else "?"
-                lines.append(f"- {when} — Draft {(post.chosen or '?').upper()}: {first}")
+                lines.append(f"- [ref {post_ref(post)}] {when} — Draft {(post.chosen or '?').upper()}: {first}")
             else:
                 made = format_ist(post.created_at) if post.created_at else ""
-                lines.append(f"- {(post.topic or post.brief)[:140]} ({made})")
+                lines.append(f"- [ref {post_ref(post)}] {(post.topic or post.brief)[:140]} ({made})")
         return "\n".join(lines)
 
     # comments on other people's posts (idea from sergebulaev/linkedin-skills) ---------------
@@ -572,11 +611,14 @@ class BotHandler:
                 "dashboard": self.dashboard_tool_text,
                 "ideas": self.ideas_tool_text,
             }
-            out = await self.svc.writer.converse(self.memory.history(chat_id), voice, run_status, tools)
+            clock = format_ist(self.now())
+            out = await self.svc.writer.converse(self.memory.history(chat_id), voice, run_status, tools, clock)
         except Exception as exc:
             log.warning("chat_failed", extra={"error": f"{type(exc).__name__}: {exc}"[:200]})
             return await self.say(chat_id, CHAT_DOWN)
-        reply, topic = out["reply"], out["draft_topic"]
+        if out.get("action"):
+            return await self.chat_action(chat_id, out["action"])
+        reply, topic = REF_TAG.sub("", out["reply"]), out["draft_topic"]  # refs are internal, never shown
         if topic and self.svc.jev is not None:
             p = await self.svc.jev.wants_drafts(self.memory.history(chat_id))
             log.info("jev_gate", extra={"p": p})
@@ -591,6 +633,141 @@ class BotHandler:
             return await self.start_generation(chat_id, topic, echo=True)
         self.memory.add(chat_id, "assistant", reply or "…")
         await self.say(chat_id, reply or "Say that again?")
+
+    # chat actions (step 3) ---------------------------------------------------------
+    async def chat_action(self, chat_id: int, action: dict[str, Any]) -> None:
+        """Act on what the chat model proposed. The reply here is always written by the bot,
+        never the model, so chat can't claim something happened that didn't."""
+        name = str(action.get("name") or "")
+        log.info("chat_action", extra={"action": name})
+        statuses = ACTION_STATUSES.get(name)
+        if statuses is None:
+            return await self.tell(chat_id, "I can't do that from chat. Use the buttons under the post, or /help.")
+        post = await self.resolve_post(chat_id, action.get("post"), statuses)
+        if isinstance(post, str):
+            return await self.tell(chat_id, post)
+        if isinstance(post, list):
+            return await self.ask_which(chat_id, action, post)
+        draft = str(action.get("draft") or "").lower() or None
+        if name in ("schedule", "tune") and draft not in ("a", "b"):
+            draft = post.chosen or (None if post.draft_b else "a")
+            if draft is None:
+                return await self.tell(chat_id, "Which version, A or B?")
+        if name in ("tune", "new_image", "show"):
+            return await self.run_direct_action(chat_id, name, post, draft, str(action.get("mode") or ""))
+        pending = PendingAction(secrets.token_hex(4), name, post.id, draft=draft)
+        if name in ("schedule", "reschedule"):
+            pending.when_spec = str(action.get("when") or "").strip().lower()
+            pending.when = self.resolve_when(pending.when_spec)
+            if pending.when is None:
+                return await self.tell(chat_id, WHEN_HINT)
+        self.pending[chat_id] = pending
+        about = (post.draft(post.chosen or draft or "a").strip().splitlines() or [""])[0][:90] or (post.topic or post.brief)[:90]
+        question = {
+            "schedule": f"Schedule this for {format_ist(pending.when)}?" if pending.when else "",
+            "reschedule": f"Move this to {format_ist(pending.when)}?" if pending.when else "",
+            "unschedule": "Unschedule this? It goes back to waiting for a time.",
+            "discard": "Discard this? It will never post.",
+        }[name]
+        keyboard = [[("✅ Yes", f"act:yes:{pending.nonce}"), ("✖ No", f"act:no:{pending.nonce}")]]
+        self.memory.add(chat_id, "assistant", f"(asked to confirm: {question})")
+        await self.say(chat_id, f"{question}\n\n“{about}”", keyboard)
+
+    async def tell(self, chat_id: int, text: str) -> None:
+        self.memory.add(chat_id, "assistant", text)
+        await self.say(chat_id, text)
+
+    def resolve_when(self, spec: str | None) -> datetime | None:
+        now = self.now()
+        if spec in RELATIVE_TIMES:
+            return now + RELATIVE_TIMES[spec]
+        return parse_when(spec or "", now)
+
+    async def resolve_post(self, chat_id: int, ref: Any, statuses: tuple[str, ...]) -> Post | list[Post] | str:
+        """The post an action means: by ref (uuid prefix from a lookup), or the only one in
+        a matching state. Otherwise the real candidates to pick from (a ref the model made
+        up matches nothing, so he picks from what actually exists), never a guess."""
+        candidates = [p for status in statuses for p in await self.db.posts_with_status(chat_id, status, 10)]  # type: ignore[arg-type]
+        ref = str(ref or "").strip().lstrip("#").lower().removeprefix("ref").strip()
+        matches = [p for p in candidates if p.id.startswith(ref)] if len(ref) >= 4 else []
+        if len(matches) == 1:
+            return matches[0]
+        if len(candidates) == 1 and not ref:
+            return candidates[0]
+        if not candidates:
+            what = "scheduled post" if statuses == ("queued",) else "draft" if statuses == ("awaiting_choice",) else "post"
+            return f"There's no {what} for that right now."
+        return (matches or candidates)[:MAX_CHOICES]
+
+    async def ask_which(self, chat_id: int, action: dict[str, Any], posts: list[Post]) -> None:
+        """One button per real post; the tap carries on with the same action."""
+        nonce = secrets.token_hex(4)
+        self.choosing[chat_id] = (nonce, action, [p.id for p in posts])
+        lines, keyboard = [], []
+        for i, p in enumerate(posts, 1):
+            when = f"{format_ist(p.scheduled_at)} — " if p.scheduled_at else ""
+            lines.append(f"{i}. {when}{(p.topic or p.brief)[:90]}")
+            keyboard.append([(f"{i}. {(p.topic or p.brief)[:40]}", f"act:pick:{nonce}:{i}")])
+        text = "Which one?\n\n" + "\n".join(lines)
+        self.memory.add(chat_id, "assistant", text)
+        await self.say(chat_id, text, keyboard)
+
+    async def run_direct_action(self, chat_id: int, name: str, post: Post, draft: str | None, mode: str) -> None:
+        """Same as tapping the button under the post: these only touch a waiting draft."""
+        if name == "tune" and mode not in TUNE_LABELS:
+            return await self.tell(chat_id, "Shorter, a new hook, or bolder?")
+        cb = {
+            "tune": Callback("tune", f"{draft}-{mode}", post.id),
+            "new_image": Callback("img", None, post.id),
+            "show": Callback("show", None, post.id),
+        }[name]
+        if post.id in self.regenerating:
+            return await self.tell(chat_id, "I'm still working on that draft — wait for the update.")
+        self.memory.add(chat_id, "assistant", f"({name} on draft {post_ref(post)})")
+        await self.route_callback(chat_id, cb, post)
+
+    async def on_action_button(self, chat_id: int, data: str) -> str:
+        _, choice, nonce, index = (data.split(":") + ["", "", ""])[:4]
+        if choice == "pick":
+            waiting = self.choosing.get(chat_id)
+            if waiting is None or waiting[0] != nonce or not index.isdigit() or not 1 <= int(index) <= len(waiting[2]):
+                return "Expired"
+            del self.choosing[chat_id]
+            await self.chat_action(chat_id, {**waiting[1], "post": waiting[2][int(index) - 1]})
+            return "Picked"
+        pending = self.pending.get(chat_id)
+        if pending is None or pending.nonce != nonce:
+            return "Expired"
+        del self.pending[chat_id]
+        if choice != "yes":
+            await self.tell(chat_id, "Okay, left it as it is.")
+            return "Cancelled"
+        post = await self.db.get_post(pending.post_id)
+        if post is None or post.chat_id != chat_id or post.status not in ACTION_STATUSES[pending.name]:
+            await self.say(chat_id, "That post already moved on — nothing changed.")
+            return "Expired"
+        if post.id in self.regenerating:
+            await self.say(chat_id, "I'm still working on that draft — try again once the update lands.")
+            return "Working on it"
+        when = pending.when
+        if pending.when_spec in RELATIVE_TIMES:
+            when = self.resolve_when(pending.when_spec)
+        elif when is not None and when <= self.now():
+            await self.say(chat_id, "That time has passed — nothing changed. Tell me a new time.")
+            return "Expired"
+        if pending.name == "schedule":
+            if post.chosen != pending.draft and await self.db.update_post(post.id, {"chosen": pending.draft}, status="awaiting_choice") is None:
+                return "Expired"
+            return await self.queue(chat_id, post.id, when)  # type: ignore[arg-type]
+        if pending.name == "reschedule":
+            if await self.db.update_post(post.id, {"scheduled_at": when}, status="queued") is None:
+                await self.say(chat_id, "Too late — it's already posting.")
+                return "Too late — already posting"
+            await self.say(chat_id, queued_text(post.chosen, when, not post.draft_b) + " (moved)", queued_keyboard(post.id))  # type: ignore[arg-type]
+            await self.warn_if_crowded(chat_id, post.id, when)  # type: ignore[arg-type]
+            return "Moved"
+        cb = Callback("unq" if pending.name == "unschedule" else "drop", None, post.id)
+        return await self.route_callback(chat_id, cb, post) or "Done"
 
     async def on_state_reply(self, chat_id: int, state: ChatState, text: str) -> None:
         action = state.pending_action
@@ -683,6 +860,11 @@ class BotHandler:
                 return
             if data in ("iv:skip", "iv:never", "iv:done"):
                 answer = await self.interview_button(chat_id, data[3:])
+                return
+            if data and data.startswith("act:"):
+                answer = await self.on_action_button(chat_id, data)
+                if message_id is not None:
+                    await self._clear_buttons(chat_id, message_id)  # yes or no, this proposal is spent
                 return
             if data == "status:refresh":
                 await self.status_flow(chat_id)

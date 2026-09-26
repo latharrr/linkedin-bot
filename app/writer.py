@@ -441,9 +441,11 @@ class Writer:
         voice: dict[str, Any] | None,
         run_status: str | None = None,
         tools: dict[str, ToolFn] | None = None,
+        clock: str | None = None,
     ) -> dict[str, Any]:
-        """Chat reply → {"reply": str, "draft_topic": str | None}. A reply that isn't the
-        requested JSON is still shown as chat, and never starts a draft.
+        """Chat reply → {"reply": str, "draft_topic": str | None, "action": dict | None}. A
+        reply that isn't the requested JSON is still shown as chat, and never starts a draft
+        or proposes an action.
 
         run_status: session state (is a draft already running, which stage, since when) so
         the model reports status or explains a run is in progress instead of guessing.
@@ -451,13 +453,20 @@ class Writer:
         tools: read-only lookups (status, queue, drafts, dashboard, ideas — see bot.py) the
         model can call by name instead of guessing. Never anything that changes state: chat
         only ever proposes a draft_topic, it doesn't start the run itself (bot.py does, and
-        only after the Jev gate). Each round trip is one extra model call, so this is capped."""
+        only after the Jev gate). Each round trip is one extra model call, so this is capped.
+
+        action: a proposed change ({"name", "post", "when", "mode", "draft"}) handed back to
+        bot.py as-is. The model never executes it: bot.py resolves the post, and anything that
+        schedules, unschedules or discards waits for his ✅ tap.
+
+        clock: the current IST date and time, so "tomorrow 8am" can become a real date."""
         voice = voice or {}
         system = render(
             load_prompt("chat_system"),
             background="\n".join(f"- {f}" for f in voice.get("background") or []) or "(not loaded)",
             claim_rules="\n".join(f"- {r}" for r in voice.get("claim_rules") or []) or "(none)",
             run_status=run_status or "No draft is currently running.",
+            clock=clock or "(unknown)",
         )
         messages = [{"role": "system", "content": system}, *history]
         for _ in range(MAX_TOOL_ROUNDS):
@@ -479,10 +488,14 @@ class Writer:
                     {"role": "user", "content": f"[{call} result]\n{outcome}\n\nNow answer him using this, in the same JSON format."},
                 ]
                 continue
-            topic = data.get("draft_topic")
             reply = str(data.get("reply") or "").strip()
-            return {"reply": reply, "draft_topic": topic.strip() if isinstance(topic, str) and topic.strip() else None}
-        return {"reply": "That took a couple of lookups too many — ask me again?", "draft_topic": None}
+            action = data.get("action")
+            if isinstance(action, dict) and isinstance(action.get("name"), str):
+                return {"reply": reply, "draft_topic": None, "action": action}
+            topic = data.get("draft_topic")
+            topic = topic.strip() if isinstance(topic, str) and topic.strip() else None
+            return {"reply": reply, "draft_topic": topic, "action": None}
+        return {"reply": "That took a couple of lookups too many — ask me again?", "draft_topic": None, "action": None}
 
     async def extract_voice(self, posts: list[str]) -> dict[str, Any]:
         prompt = render(load_prompt("voice_extraction"), posts="\n\n---\n\n".join(posts))
