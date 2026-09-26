@@ -50,6 +50,14 @@ _STATUS_QUERY = re.compile(
     re.IGNORECASE,
 )
 _CANCEL_REQUEST = re.compile(r"^(?:cancel|stop|abort|never\s*mind|forget\s+it)\b[\s.!]*$", re.IGNORECASE)
+# A typed answer to a pending ✅/✖ question (see BotHandler.pending). Whole-message only,
+# so "yes but make it shorter" goes to chat instead of confirming.
+_YES = re.compile(
+    r"^(?:y|ya|yes|yeah|yep|yup|sure|ok|okay|confirm(?:ed)?|do\s+it|go\s+ahead|go\s+for\s+it|please\s+do|"
+    r"yes\s+please|yes\s+(?:all|all\s+of\s+them|do\s+it|discard|delete|go\s+ahead)|✅)[\s.!👍]*$",
+    re.IGNORECASE,
+)
+_NO = re.compile(r"^(?:n|no|nope|nah|don'?t|do\s+not|cancel|keep\s+(?:it|them)|never\s*mind|✖|❌)[\s.!]*$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -108,3 +116,23 @@ def is_status_query(text: str) -> bool:
 def is_cancel_request(text: str) -> bool:
     """"cancel", "stop", "never mind" while a run is in progress."""
     return bool(_CANCEL_REQUEST.match(text.strip()))
+
+
+def is_yes(text: str) -> bool:
+    """"yes", "yep", "do it", "yes all" — typed instead of tapping ✅."""
+    return bool(_YES.match(text.strip()))
+
+
+def is_no(text: str) -> bool:
+    """"no", "keep it", "never mind" — typed instead of tapping ✖."""
+    return bool(_NO.match(text.strip()))
+
+
+def short_label(text: str, limit: int = 28) -> str:
+    """Fit a button label without cutting a word in half ("lets a solo fo")."""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    cut = text[: limit - 1]
+    head = cut.rsplit(" ", 1)[0] if " " in cut else cut
+    return head.rstrip(" ,.;:-—–") + "…"

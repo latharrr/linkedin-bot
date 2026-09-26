@@ -33,8 +33,11 @@ from app.chat import (
     DraftRequest,
     is_cancel_request,
     is_decline,
+    is_no,
     is_status_query,
+    is_yes,
     parse_draft_request,
+    short_label,
     wants_bot_to_pick,
 )
 from app.config import Settings, get_settings
@@ -155,6 +158,20 @@ ACTION_STATUSES: dict[str, tuple[str, ...]] = {
     "show": ("awaiting_choice",),
 }
 CONFIRMED = {"schedule", "reschedule", "unschedule", "discard"}
+# "post": "all" / "all_drafts" / "all_scheduled" — only these may hit several posts at once.
+BULK = {"discard", "unschedule"}
+ALL_SCOPES = {"all": None, "all_drafts": ("awaiting_choice",), "all_scheduled": ("queued",)}
+# The model sometimes asks "discard all three drafts?" as plain text instead of proposing an
+# action (live bug 2026-09-26). A yes/no question about one of these is turned into ✅/✖ buttons.
+CONFIRM_ASK = re.compile(r"\b(?:do\s+you\s+want|want\s+me\s+to|should\s+i|shall\s+i|are\s+you\s+sure|confirm|ok(?:ay)?\s+to|go\s+ahead)\b", re.IGNORECASE)
+MUTATING_VERBS = (  # order matters: "unschedule" and "reschedule" also contain "schedule"
+    ("unschedule", re.compile(r"\bun-?schedul|\bunqueue|\btake\b.*\boff\s+the\s+schedule", re.IGNORECASE)),
+    ("reschedule", re.compile(r"\breschedul|\bmove\b|\bpush\b", re.IGNORECASE)),
+    ("discard", re.compile(r"\bdiscard|\bdelet|\bdrop\b|\bremov|\btrash|\bscrap\b|\bthrow\b.*\baway", re.IGNORECASE)),
+    ("schedule", re.compile(r"\bschedul|\bqueue\b", re.IGNORECASE)),
+)
+WHEN_IN_TEXT = re.compile(r"\b\d{1,2}(?::\d{2})?\s*[ap]\.?m\b|\b\d{1,2}:\d{2}\b", re.IGNORECASE)
+ALL_WORDS = re.compile(r"\b(?:all|every|everything|both|each)\b|\b(?:two|three|four|five|\d+)\s+(?:of\s+them|drafts?|posts?)\b", re.IGNORECASE)
 RELATIVE_TIMES = {"now": NOW_DELAY, "30m": timedelta(minutes=30)}
 MAX_CHOICES = 5
 REF_TAG = re.compile(r"[ \t]*[\[(]?\bref[:\s]+[0-9a-f]{6,}[\])]?", re.IGNORECASE)
@@ -215,15 +232,35 @@ class PendingAction:
 
     nonce: str
     name: str
-    post_id: str
+    post_ids: list[str]  # more than one only for a bulk discard / unschedule
     when_spec: str | None = None
     when: datetime | None = None
     draft: str | None = None
+    typed_ok: bool = True  # a typed "yes" counts only right after the question
+    statuses: tuple[str, ...] | None = None  # bulk: the states he confirmed ("all drafts" stays drafts)
 
 
 def post_ref(post: Post) -> str:
     """Short id the chat model can hand back in an action (a uuid prefix)."""
     return post.id[:8]
+
+
+def implied_action(reply: str, user_text: str) -> dict[str, Any] | None:
+    """A plain-text "do you want me to discard all three drafts?" → the action it asks about,
+    so the bot asks with ✅/✖ buttons instead. None for anything that isn't such a question."""
+    if not reply.rstrip().endswith("?") or not CONFIRM_ASK.search(reply):
+        return None
+    name = next((n for n, verb in MUTATING_VERBS if verb.search(reply)), None)
+    if name is None:
+        return None
+    if name in ("schedule", "reschedule"):  # only with the time it asked about, or it's just chat
+        clock = WHEN_IN_TEXT.search(reply)
+        return {"name": name, "post": None, "when": clock.group(0)} if clock else None
+    both = f"{reply} {user_text}"
+    if name not in BULK or not ALL_WORDS.search(both):
+        return {"name": name, "post": None}
+    scheduled, drafts = re.search(r"\b(?:scheduled|queued)\b", both, re.I), re.search(r"\bdrafts?\b", both, re.I)
+    return {"name": name, "post": "all_scheduled" if scheduled and not drafts else "all_drafts" if drafts and not scheduled else "all"}
 
 
 # ── handler ──────────────────────────────────────────────────────────────────
@@ -291,6 +328,13 @@ class BotHandler:
                 return await self.cancel_run(chat_id, run)
             if is_status_query(text):
                 return await self.say(chat_id, self.run_status_text(run))
+        pending = self.pending.get(chat_id)
+        if pending is not None:
+            if pending.typed_ok and (is_yes(text) or is_no(text)):
+                self.memory.add(chat_id, "user", text)
+                await self.answer_pending(chat_id, is_yes(text))
+                return
+            pending.typed_ok = False  # he moved on: a later "yes" is about something else
         if text == "/stats":
             return await self.stats_flow(chat_id)
         request = parse_draft_request(text)
@@ -619,6 +663,10 @@ class BotHandler:
         if out.get("action"):
             return await self.chat_action(chat_id, out["action"])
         reply, topic = REF_TAG.sub("", out["reply"]), out["draft_topic"]  # refs are internal, never shown
+        implied = None if topic else implied_action(reply, text)
+        if implied is not None:  # never confirm a change in plain text: ask with ✅/✖ instead
+            log.info("chat_confirm_to_buttons", extra={"action": implied["name"]})
+            return await self.chat_action(chat_id, implied)
         if topic and self.svc.jev is not None:
             p = await self.svc.jev.wants_drafts(self.memory.history(chat_id))
             log.info("jev_gate", extra={"p": p})
@@ -643,6 +691,9 @@ class BotHandler:
         statuses = ACTION_STATUSES.get(name)
         if statuses is None:
             return await self.tell(chat_id, "I can't do that from chat. Use the buttons under the post, or /help.")
+        scope = str(action.get("post") or "").strip().lower()
+        if scope in ALL_SCOPES and name in BULK:
+            return await self.confirm_bulk(chat_id, name, ALL_SCOPES[scope] or statuses)
         post = await self.resolve_post(chat_id, action.get("post"), statuses)
         if isinstance(post, str):
             return await self.tell(chat_id, post)
@@ -655,13 +706,12 @@ class BotHandler:
                 return await self.tell(chat_id, "Which version, A or B?")
         if name in ("tune", "new_image", "show"):
             return await self.run_direct_action(chat_id, name, post, draft, str(action.get("mode") or ""))
-        pending = PendingAction(secrets.token_hex(4), name, post.id, draft=draft)
+        pending = PendingAction(secrets.token_hex(4), name, [post.id], draft=draft)
         if name in ("schedule", "reschedule"):
             pending.when_spec = str(action.get("when") or "").strip().lower()
             pending.when = self.resolve_when(pending.when_spec)
             if pending.when is None:
                 return await self.tell(chat_id, WHEN_HINT)
-        self.pending[chat_id] = pending
         about = (post.draft(post.chosen or draft or "a").strip().splitlines() or [""])[0][:90] or (post.topic or post.brief)[:90]
         question = {
             "schedule": f"Schedule this for {format_ist(pending.when)}?" if pending.when else "",
@@ -669,9 +719,31 @@ class BotHandler:
             "unschedule": "Unschedule this? It goes back to waiting for a time.",
             "discard": "Discard this? It will never post.",
         }[name]
+        await self.ask_confirm(chat_id, pending, question, f"“{about}”")
+
+    async def confirm_bulk(self, chat_id: int, name: str, statuses: tuple[str, ...]) -> None:
+        """"discard all drafts": one ✅ for every matching post, listed so he sees what goes."""
+        posts = [p for status in statuses for p in await self.db.posts_with_status(chat_id, status, 10)]  # type: ignore[arg-type]
+        if not posts:
+            what = "scheduled posts" if statuses == ("queued",) else "drafts" if statuses == ("awaiting_choice",) else "posts"
+            return await self.tell(chat_id, f"There are no {what} for that right now.")
+        n = len(posts)
+        noun = ("draft" if statuses == ("awaiting_choice",) else "scheduled post" if statuses == ("queued",) else "post") + ("s" if n > 1 else "")
+        if name == "discard":
+            question = f"Discard all {n} {noun}? They will never post." if n > 1 else f"Discard the only {noun}? It will never post."
+        else:
+            question = f"Unschedule all {n} {noun}? They go back to waiting for a time." if n > 1 else f"Unschedule the only {noun}? It goes back to waiting for a time."
+        lines = [f"{i}. {(p.topic or p.brief)[:90]}" for i, p in enumerate(posts, 1)]
+        pending = PendingAction(secrets.token_hex(4), name, [p.id for p in posts], statuses=statuses)
+        await self.ask_confirm(chat_id, pending, question, "\n".join(lines))
+
+    async def ask_confirm(self, chat_id: int, pending: PendingAction, question: str, detail: str) -> None:
+        """Every change chat proposes is confirmed with ✅/✖ buttons (or a typed yes/no)."""
+        self.pending[chat_id] = pending
+        self.choosing.pop(chat_id, None)
         keyboard = [[("✅ Yes", f"act:yes:{pending.nonce}"), ("✖ No", f"act:no:{pending.nonce}")]]
-        self.memory.add(chat_id, "assistant", f"(asked to confirm: {question})")
-        await self.say(chat_id, f"{question}\n\n“{about}”", keyboard)
+        self.memory.add(chat_id, "assistant", f"(asked to confirm with buttons: {question})")
+        await self.say(chat_id, f"{question}\n\n{detail}", keyboard)
 
     async def tell(self, chat_id: int, text: str) -> None:
         self.memory.add(chat_id, "assistant", text)
@@ -700,14 +772,18 @@ class BotHandler:
         return (matches or candidates)[:MAX_CHOICES]
 
     async def ask_which(self, chat_id: int, action: dict[str, Any], posts: list[Post]) -> None:
-        """One button per real post; the tap carries on with the same action."""
+        """One button per real post; the tap carries on with the same action. Discard and
+        unschedule also get an "All" button."""
         nonce = secrets.token_hex(4)
         self.choosing[chat_id] = (nonce, action, [p.id for p in posts])
         lines, keyboard = [], []
         for i, p in enumerate(posts, 1):
             when = f"{format_ist(p.scheduled_at)} — " if p.scheduled_at else ""
             lines.append(f"{i}. {when}{(p.topic or p.brief)[:90]}")
-            keyboard.append([(f"{i}. {(p.topic or p.brief)[:40]}", f"act:pick:{nonce}:{i}")])
+            keyboard.append([(f"{i}. {short_label(p.topic or p.brief)}", f"act:pick:{nonce}:{i}")])
+        if action.get("name") in BULK and len(posts) > 1:
+            label = "🗑 All of them" if action.get("name") == "discard" else "↩️ All of them"
+            keyboard.append([(label, f"act:pick:{nonce}:all")])
         text = "Which one?\n\n" + "\n".join(lines)
         self.memory.add(chat_id, "assistant", text)
         await self.say(chat_id, text, keyboard)
@@ -730,19 +806,40 @@ class BotHandler:
         _, choice, nonce, index = (data.split(":") + ["", "", ""])[:4]
         if choice == "pick":
             waiting = self.choosing.get(chat_id)
-            if waiting is None or waiting[0] != nonce or not index.isdigit() or not 1 <= int(index) <= len(waiting[2]):
+            if waiting is None or waiting[0] != nonce:
+                return "Expired"
+            _, action, ids = waiting
+            if index == "all" and action.get("name") in BULK:
+                del self.choosing[chat_id]
+                posts = [p for p in [await self.db.get_post(i) for i in ids] if p is not None and p.status in ACTION_STATUSES[action["name"]]]
+                if not posts:
+                    await self.tell(chat_id, "Those posts already moved on — nothing changed.")
+                    return "Expired"
+                question = f"Discard all {len(posts)}? They will never post." if action["name"] == "discard" else f"Unschedule all {len(posts)}? They go back to waiting."
+                lines = "\n".join(f"{i}. {(p.topic or p.brief)[:90]}" for i, p in enumerate(posts, 1))
+                pending = PendingAction(secrets.token_hex(4), action["name"], [p.id for p in posts], statuses=tuple({p.status for p in posts}))
+                await self.ask_confirm(chat_id, pending, question, lines)
+                return "Picked"
+            if not index.isdigit() or not 1 <= int(index) <= len(ids):
                 return "Expired"
             del self.choosing[chat_id]
-            await self.chat_action(chat_id, {**waiting[1], "post": waiting[2][int(index) - 1]})
+            await self.chat_action(chat_id, {**action, "post": ids[int(index) - 1]})
             return "Picked"
         pending = self.pending.get(chat_id)
         if pending is None or pending.nonce != nonce:
             return "Expired"
-        del self.pending[chat_id]
-        if choice != "yes":
-            await self.tell(chat_id, "Okay, left it as it is.")
+        return await self.answer_pending(chat_id, choice == "yes")
+
+    async def answer_pending(self, chat_id: int, yes: bool) -> str:
+        """✅/✖ on the pending proposal, tapped or typed. State is re-checked here, so a post
+        that moved on since the question is never touched."""
+        pending = self.pending.pop(chat_id)
+        if not yes:
+            await self.tell(chat_id, "Okay, left it as it is." if len(pending.post_ids) == 1 else "Okay, left them as they are.")
             return "Cancelled"
-        post = await self.db.get_post(pending.post_id)
+        if len(pending.post_ids) > 1:
+            return await self.apply_bulk(chat_id, pending)
+        post = await self.db.get_post(pending.post_ids[0])
         if post is None or post.chat_id != chat_id or post.status not in ACTION_STATUSES[pending.name]:
             await self.say(chat_id, "That post already moved on — nothing changed.")
             return "Expired"
@@ -757,6 +854,7 @@ class BotHandler:
             return "Expired"
         if pending.name == "schedule":
             if post.chosen != pending.draft and await self.db.update_post(post.id, {"chosen": pending.draft}, status="awaiting_choice") is None:
+                await self.say(chat_id, "That post already moved on — nothing changed.")
                 return "Expired"
             return await self.queue(chat_id, post.id, when)  # type: ignore[arg-type]
         if pending.name == "reschedule":
@@ -768,6 +866,33 @@ class BotHandler:
             return "Moved"
         cb = Callback("unq" if pending.name == "unschedule" else "drop", None, post.id)
         return await self.route_callback(chat_id, cb, post) or "Done"
+
+    async def apply_bulk(self, chat_id: int, pending: PendingAction) -> str:
+        """Bulk discard / unschedule: each post is re-checked and changed on its own; one
+        summary message instead of one per post."""
+        done = skipped = 0
+        allowed = pending.statuses or ACTION_STATUSES[pending.name]
+        for post_id in pending.post_ids:
+            post = await self.db.get_post(post_id)
+            if post is None or post.chat_id != chat_id or post.status not in allowed or post.id in self.regenerating:
+                skipped += 1
+                continue
+            if pending.name == "discard":
+                fields: dict[str, Any] = {"status": "failed", "error": "discarded by user"}
+            else:
+                fields = {"status": "awaiting_choice", "scheduled_at": None}
+            if await self.db.update_post(post.id, fields, status=post.status) is None:
+                skipped += 1
+            else:
+                done += 1
+        noun = "post" if done == 1 else "posts"
+        text = f"🗑 Discarded {done} {noun}. They will never post." if pending.name == "discard" else f"↩️ Unscheduled {done} {noun}. See /drafts to pick new times."
+        if done == 0:
+            text = "Nothing changed — those posts already moved on."
+        elif skipped:
+            text += f" ({skipped} already moved on, left alone.)"
+        await self.tell(chat_id, text)
+        return "Done" if done else "Expired"
 
     async def on_state_reply(self, chat_id: int, state: ChatState, text: str) -> None:
         action = state.pending_action

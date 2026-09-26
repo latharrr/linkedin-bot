@@ -378,6 +378,76 @@ async def test_made_up_ref_offers_the_real_posts_and_a_pick_carries_on(h, fakes)
     assert fakes["messenger"].answers()[-1] == "Expired"
 
 
+async def test_bulk_discard_confirms_with_buttons_and_typed_yes_discards_all(h, fakes):
+    """Live bug 2026-09-26: "discrd all drafts" got a plain-text "discard all three?" with no
+    buttons, then his "yes" fell back to a single "Which one?" pick."""
+    drafts = [fakes["db"].add_post(draft_b="", topic=t) for t in ("eval costs", "agent memory", "stablecoins")]
+    queued = fakes["db"].add_post(status="queued", chosen="a", scheduled_at=NOW + timedelta(hours=3))
+    fakes["nvidia"].chat_reply = {"reply": "Do you want me to discard all three drafts?", "action": None}
+    await h.on_text(CHAT_ID, "discrd all drafts")
+    assert fakes["messenger"].texts()[-1].startswith("Discard all 3 drafts? They will never post.")
+    assert [cb.split(":")[1] for cb in act_buttons(fakes)] == ["yes", "no"]
+    calls = len(fakes["nvidia"].chat_calls)
+    await h.on_text(CHAT_ID, "yes")
+    assert len(fakes["nvidia"].chat_calls) == calls  # resolved against the pending action, no new model turn
+    assert all(fakes["db"].posts[p.id]["status"] == "failed" for p in drafts)
+    assert fakes["db"].posts[queued.id]["status"] == "queued"  # "drafts" never touches the schedule
+    assert fakes["messenger"].texts()[-1] == "🗑 Discarded 3 posts. They will never post."
+    assert "Which one?" not in "\n".join(fakes["messenger"].texts())
+
+
+async def test_bulk_discard_action_and_tap(h, fakes):
+    drafts = [fakes["db"].add_post(draft_b="", topic=t) for t in ("eval costs", "agent memory")]
+    fakes["nvidia"].chat_reply = {"reply": "", "action": {"name": "discard", "post": "all_drafts"}}
+    await h.on_text(CHAT_ID, "discard all drafts")
+    fakes["db"].posts[drafts[0].id]["status"] = "queued"  # changed under us: left alone on ✅
+    await h.on_callback(CHAT_ID, "cb", act_buttons(fakes)[0])
+    assert fakes["db"].posts[drafts[0].id]["status"] == "queued"
+    assert fakes["db"].posts[drafts[1].id]["status"] == "failed"
+    assert fakes["messenger"].texts()[-1] == "🗑 Discarded 1 post. They will never post. (1 already moved on, left alone.)"
+
+
+async def test_typed_no_and_stale_typed_yes(h, fakes):
+    post = fakes["db"].add_post(draft_b="")
+    fakes["nvidia"].chat_reply = {"reply": "", "action": {"name": "discard", "post": None}}
+    await h.on_text(CHAT_ID, "drop it")
+    await h.on_text(CHAT_ID, "no")
+    assert fakes["db"].posts[post.id]["status"] == "awaiting_choice" and h.pending == {}
+    assert fakes["messenger"].texts()[-1] == "Okay, left it as it is."
+    await h.on_text(CHAT_ID, "drop it")
+    fakes["nvidia"].chat_reply = {"reply": "Sure thing.", "action": None}
+    await h.on_text(CHAT_ID, "what's the weather")  # he moved on
+    await h.on_text(CHAT_ID, "yes")  # about something else now: goes to chat, discards nothing
+    assert fakes["db"].posts[post.id]["status"] == "awaiting_choice"
+
+
+async def test_pick_list_has_an_all_button_for_discard(h, fakes):
+    drafts = [fakes["db"].add_post(draft_b="", topic=t) for t in ("eval costs", "agent memory")]
+    fakes["nvidia"].chat_reply = {"reply": "", "action": {"name": "discard", "post": None}}
+    await h.on_text(CHAT_ID, "drop a draft")
+    await h.on_callback(CHAT_ID, "cb1", act_buttons(fakes)[-1])  # 🗑 All of them
+    assert fakes["messenger"].texts()[-1].startswith("Discard all 2?")
+    await h.on_callback(CHAT_ID, "cb2", act_buttons(fakes)[0])
+    assert all(fakes["db"].posts[p.id]["status"] == "failed" for p in drafts)
+
+
+async def test_text_schedule_question_with_a_time_becomes_buttons(h, fakes):
+    post = fakes["db"].add_post(draft_b="")
+    fakes["nvidia"].chat_reply = {"reply": "Should I schedule it for 6pm?", "action": None}
+    await h.on_text(CHAT_ID, "put it out this evening")
+    assert fakes["messenger"].texts()[-1].startswith("Schedule this for Tue 22 Sep, 06:00 PM IST?")
+    await h.on_text(CHAT_ID, "yep")
+    assert fakes["db"].posts[post.id]["status"] == "queued"
+
+
+def test_pick_labels_end_on_a_whole_word():
+    from app.chat import short_label
+
+    label = short_label("How a stablecoin rail lets a solo founder bill agents")
+    assert label == "How a stablecoin rail lets…" and len(label) <= 28
+    assert short_label("eval costs") == "eval costs"
+
+
 def test_ref_tags_are_scrubbed_from_chat_replies():
     from bot import REF_TAG
 
