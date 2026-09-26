@@ -142,7 +142,7 @@ def waiting_keyboard(post_id: str) -> Keyboard:
 
 def time_keyboard(post_id: str) -> Keyboard:
     return [
-        [("🌅 9 AM", build_callback("time", post_id, "9am")), ("🕕 6 PM", build_callback("time", post_id, "6pm"))],
+        [("🌅 9 AM (best)", build_callback("time", post_id, "9am")), ("🕕 6 PM", build_callback("time", post_id, "6pm"))],
         [("🌙 9 PM", build_callback("time", post_id, "9pm")), ("⏱ In 30 min", build_callback("time", post_id, "30m"))],
         [("⚡ Now", build_callback("time", post_id, "now")), ("✍️ Custom", build_callback("time", post_id, "custom"))],
     ]

@@ -194,6 +194,104 @@ def check_draft(text: str, min_words: int = 140, max_words: int = 240) -> StyleR
     return report
 
 
+# ── his voice rules (pillars.toml niche; data: his own post impressions) ───────
+# Hard rules for every draft. "Humanity has peaked........" (877 impressions, his best)
+# opened on a curiosity gap; "Trust Tax" (187) and "Acquisition vs Retention" (126) were
+# generic advice with no story of his, and that style is dead for him.
+MAX_TAGS = 4  # "3-4 relevant tags" at most; more is a hashtag dump
+MAX_EMOJI = 2
+_BOLD_UNICODE = re.compile("[\U0001D400-\U0001D7FF]")
+_THESIS_HOOK = re.compile(
+    r"^[\s\"']*(?!(?:i|i'm|i've|my|we|our)\b)(?:why\s|how\s+to\s|here'?s\s|the\s+(?:key|secret|truth|problem|real\s+reason|best\s+way|future)\b|"
+    r"stop\s|you\s+(?:need|should|must|have\s+to)\b|most\s+(?:people|founders|startups|teams|companies)\b|"
+    r"every\s+(?:founder|startup|team|company)\b|if\s+you\s|great\s+\w+\s+(?:is|are)\b|success\s+is\b|"
+    r"[\w\s-]{2,40}\s+is\s+(?:the|not|a|an|about|more|all)\s)",
+    re.I,
+)
+_ME = re.compile(r"\b(?:I|I'm|I've|I'd|I'll|my|me|mine)\b")
+_PS = re.compile(r"^\s*p\.\s?s\.?", re.I)
+
+
+def body_lines(text: str) -> list[str]:
+    """Non-empty lines, without a closing hashtag line."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    while lines and all(_HASHTAG.fullmatch(t) for t in lines[-1].split()):
+        lines.pop()
+    return lines
+
+
+def hook_lines(text: str) -> str:
+    """Lines 1-2: what the curiosity gap has to live in."""
+    return " ".join(body_lines(text)[:2])
+
+
+def is_thesis_hook(hook: str) -> bool:
+    """Opens with a claim, advice or a definition instead of a curiosity gap."""
+    return bool(_THESIS_HOOK.match(hook.replace("’", "'")))
+
+
+def voice_issues(text: str) -> list[str]:
+    """His voice rules, as edit instructions for the fix pass. Empty = the draft passes."""
+    plain = text.replace("’", "'")
+    issues = []
+    if _BOLD_UNICODE.search(plain):
+        issues.append("Remove the bold-Unicode lettering (𝐥𝐢𝐤𝐞 𝐭𝐡𝐢𝐬): plain letters only.")
+    tags = _HASHTAG.findall(plain)
+    if len(tags) > MAX_TAGS:
+        issues.append(f"Hashtag dump ({len(tags)} tags): keep at most {MAX_TAGS} relevant tags on the last line, or none.")
+    if sum(1 for ch in plain if _is_emoji(ch)) > MAX_EMOJI:
+        issues.append("Too many emoji: remove them all, the words carry the post.")
+    lines = body_lines(plain)
+    if lines and is_thesis_hook(lines[0]):
+        issues.append(
+            f'The first line states a thesis: "{lines[0][:140]}". Open on a curiosity gap instead (a result, a moment or '
+            "a tension, with the how or why held back), at most 140 characters, using only facts already in the post."
+        )
+    half = lines[: max(1, (len(lines) + 1) // 2)]
+    # Personal stake before the lesson, real or omitted: a post with no personal line is
+    # allowed (the grounding gate blocks invented ones); one that saves it for the end isn't.
+    if lines and any(_ME.search(ln) for ln in lines) and not any(_ME.search(ln) for ln in half):
+        issues.append(
+            "No personal stake before the lesson: his own line comes only after the lesson. Move what he did, broke or "
+            "paid for (already in the post) near the top; never invent an experience."
+        )
+    if not lines or "?" not in lines[-1]:
+        issues.append("End with a genuine question on its own last line, starting with \"P.S.\", easy to answer from experience.")
+    return issues
+
+
+# Fixed deterministically after polish (unbold, ps_ending), so never worth a model fix pass.
+ENFORCED_IN_CODE = ("Remove the bold-Unicode", "End with a genuine question")
+
+
+def draft_violations(text: str) -> list[str]:
+    """Short names of the voice rules a finished draft breaks (for tests and validate_writer)."""
+    names = {
+        "Remove the bold-Unicode": "bold-Unicode", "Hashtag dump": "hashtag dump", "Too many emoji": "emoji spam",
+        "The first line states a thesis": "thesis hook", "No personal stake": "no personal stake", "End with a genuine": "no closing question",
+    }
+    return [name for issue in voice_issues(text) for key, name in names.items() if issue.startswith(key)]
+
+
+def ps_ending(text: str, question: str = "") -> str:
+    """The closing question as "P.S. …?": prefix one that's there, or add the outline's
+    question when the draft has none. Deterministic, so every draft ends on a question."""
+    lines = text.rstrip().split("\n")
+    tail: list[str] = []
+    while lines and (not lines[-1].strip() or all(_HASHTAG.fullmatch(t) for t in lines[-1].split())):
+        tail.insert(0, lines.pop())
+    if not lines:
+        return text
+    last = lines[-1].strip()
+    if "?" in last:
+        if not _PS.match(last) and last.endswith("?") and len(lines) > 1:
+            lines[-1] = f"P.S. {last}"
+    elif question.strip().endswith("?"):
+        lines += ["", f"P.S. {question.strip()}"]
+    tags = [t for t in tail if t.strip()]
+    return "\n".join(lines).rstrip() + ("\n\n" + "\n".join(tags) if tags else "")
+
+
 # ── fixable issues (step 7d: lint → one targeted fix) ────────────────────────
 MAX_STATS = 2
 _STAT = re.compile(r"\d[\d,.]*\s?%|\b\d+(?:\.\d+)?x\b", re.IGNORECASE)
@@ -224,6 +322,7 @@ def fixable_issues(text: str, own: str = "", keep_numbers: bool = False) -> list
             end = plain.find("\n", m.end())
             line = plain[start : end if end != -1 else len(plain)].strip()
             issues.append(f'Rewrite this line plainly, without the "{name}" pattern: "{line[:200]}"')
+    issues += [i for i in voice_issues(text) if not i.startswith(ENFORCED_IN_CODE)]
     for para, hits in dense_paragraphs(text):
         issues.append(f'This paragraph reads machine-written ({", ".join(hits)}). Say it in plain spoken words: "{para[:200]}"')
     if fragment_count(text) > FRAGMENT_LIMIT:

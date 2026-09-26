@@ -38,8 +38,13 @@ _ME = re.compile(r"\b(?:I|I'm|I've|I'd|I'll)\b|\b(?:my|me|mine|we|our|ours)\b", 
 # Capitalised words in his facts that aren't his: months, tools, places, generic nouns.
 # What's left names his organisations and projects (PicaPool, ProofMart, UniLyf, Gapl…).
 _NOT_HIS = frozenset(
-    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "january", "february", "march", "april", "june", "july", "august", "september", "october", "november", "december", "api", "ast", "cli", "crm", "cse", "cto", "kpi", "rag", "seo", "ssh", "llp", "google", "openai", "gemini", "groq", "linkedin", "telegram", "whatsapp", "android", "react", "docker", "typescript", "ubuntu", "supabase", "socket", "vitest", "playwright", "oauth", "webrtc", "peerjs", "langgraph", "capacitor", "india", "delhi", "punjab", "marketing", "event", "student", "school", "university", "technology", "tech", "building", "connect", "college", "coordinator", "edition", "forward", "internship", "admissions", "organisations", "australia"]
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "january", "february", "march", "april", "june", "july", "august", "september", "october", "november", "december", "api", "ast", "cli", "crm", "cse", "cto", "kpi", "rag", "seo", "ssh", "llp", "google", "openai", "gemini", "groq", "linkedin", "telegram", "whatsapp", "android", "react", "docker", "typescript", "ubuntu", "supabase", "socket", "vitest", "playwright", "oauth", "webrtc", "peerjs", "langgraph", "capacitor", "india", "delhi", "punjab", "marketing", "event", "student", "school", "university", "technology", "tech", "building", "connect", "college", "coordinator", "edition", "forward", "internship", "admissions", "organisations", "australia", "the", "built", "shipped", "earlier", "summer", "advanced", "completed", "part", "growth", "strategic", "third", "repurposed", "did", "through", "cares", "training", "data", "analytics", "job", "simulation", "centre", "professional", "enhancement", "department", "dept", "office", "founder", "founders", "intern", "development", "backend", "artificial", "intelligence", "program", "challenge", "young", "innovator", "lpu", "claim", "rule"]
 )
+
+
+def his_own_names(facts: list[str]) -> set[str]:
+    """His organisations and projects as named in his facts (PicaPool, UniLyf, ProofMart…)."""
+    return {w for f in facts for w in re.findall(r"\b[A-Z][A-Za-z]{2,}\b", f) if w.lower() not in _NOT_HIS}
 
 
 def words(text: str) -> list[str]:

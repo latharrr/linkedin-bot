@@ -150,7 +150,7 @@ def build_writer(settings: Settings, clients: dict[str, object]) -> Writer:
     links = writer_links(settings, clients)
     chat = links[0].client if len(links) == 1 else FallbackChat(links)
     label = links[0].model if len(links) == 1 else f"chain({links[0].provider}:{links[0].model}+{len(links) - 1})"
-    return Writer(chat, label, settings.draft_temperature, settings.nvidia_max_tokens, settings.unbold_drafts)
+    return Writer(chat, label, settings.draft_temperature, settings.nvidia_max_tokens)
 
 
 def build_researcher(settings: Settings, groq: GroqClient | None, fresh: FreshSearch | None = None) -> ResearchSource:

@@ -13,6 +13,7 @@ from typing import Any, Protocol
 
 from app.apiclient import ChatResult
 from app.log import get_logger
+from app.pillars import load_pillars
 
 log = get_logger(__name__)
 
@@ -46,6 +47,8 @@ _FIRST_PERSON = re.compile(r"\b(?:I|I'm|I've|I'd|I'll|[Mm]y|me|[Ww]e|[Oo]ur)\b")
 def is_own_story(brief: str) -> bool:
     """A first-person brief ("my bot copied…", "I built…") is his own account. Eight facts
     on a nearby topic took over such stories in live runs, so the writer gets two, as context."""
+    if brief.startswith("Idea:"):  # a pitch from app/ideas.py, not his account (IDEA_PREFIX)
+        return False
     return bool(_FIRST_PERSON.search(brief.replace("’", "'")))
 
 
@@ -74,6 +77,11 @@ class ChatClient(Protocol):
 @cache
 def load_prompt(name: str) -> str:
     return (PROMPTS_DIR / f"{name}.txt").read_text(encoding="utf-8").rstrip("\n")
+
+
+def playbook() -> str:
+    """The copywriting playbook, with his niche filled in (pillars.toml)."""
+    return render(load_prompt("copy_playbook"), niche=load_pillars().niche)
 
 
 def render(template: str, **values: Any) -> str:
@@ -266,13 +274,13 @@ def validate_outline(outline: dict[str, Any]) -> dict[str, Any]:
 
 class Writer:
     def __init__(
-        self, client: ChatClient, model: str, draft_temperature: float, max_tokens: int = 4096, unbold: bool = False
+        self, client: ChatClient, model: str, draft_temperature: float, max_tokens: int = 4096, unbold: bool = True
     ) -> None:
         self._client = client
         self._model = model
         self._temperature = draft_temperature
         self._max_tokens = max_tokens
-        self._unbold = unbold  # UNBOLD_DRAFTS: fold 𝐛𝐨𝐥𝐝-Unicode to plain text in every draft
+        self._unbold = unbold  # 𝐛𝐨𝐥𝐝-Unicode is banned in his posts: folded to plain text in every draft
 
     async def _complete(self, user: str, system: str | None = None, sampled: bool = False) -> str:
         """Candidate drafts are sampled at draft_temperature (variety). Every other call,
@@ -301,6 +309,8 @@ class Writer:
             recent_topics=recent_topics,
             few_shot_posts="\n---\n".join(unbold(p) for p in few_shot) or "(none yet)",
             voice_profile=json.dumps(voice, ensure_ascii=False),
+            niche=load_pillars().niche,
+            pillars=load_pillars().prompt_text(),
         )
         if note:
             prompt += f"\n\n{note}"
@@ -327,9 +337,10 @@ class Writer:
             post_1=posts[0],
             post_2=posts[1],
             post_3=posts[2],
-            copy_playbook=load_prompt("copy_playbook"),
+            copy_playbook=playbook(),
             profile=voice.get("profile") or "(profile not set)",
             story_bank=voice.get("story_bank") or "(empty)",
+            niche=load_pillars().niche,
         )
         user = render(
             load_prompt("draft_user"),
@@ -346,7 +357,7 @@ class Writer:
         """Step 6b: the two candidates → the one post he gets."""
         prompt = render(
             load_prompt("final"),
-            copy_playbook=load_prompt("copy_playbook"),
+            copy_playbook=playbook(),
             profile=voice.get("profile") or "(profile not set)",
             story_bank=voice.get("story_bank") or "(empty)",
             voice_profile=json.dumps({k: v for k, v in voice.items() if k not in ("profile", "story_bank")}, ensure_ascii=False),
@@ -362,7 +373,7 @@ class Writer:
     async def deai(self, draft: str, research: str, voice: dict[str, Any]) -> str:
         prompt = render(
             load_prompt("deai"),
-            copy_playbook=load_prompt("copy_playbook"),
+            copy_playbook=playbook(),
             voice_profile=json.dumps({k: v for k, v in voice.items() if k not in ("profile", "story_bank")}, ensure_ascii=False),
             research=research,
             draft=draft,
@@ -379,7 +390,7 @@ class Writer:
         instruction = TUNE_INSTRUCTIONS[mode]
         if mode == "hook" and hooks:
             instruction += "\nCandidate hooks to pick from or sharpen:\n" + "\n".join(f"- {h}" for h in hooks)
-        prompt = render(load_prompt("tune"), instruction=instruction, copy_playbook=load_prompt("copy_playbook"), draft=draft)
+        prompt = render(load_prompt("tune"), instruction=instruction, copy_playbook=playbook(), draft=draft)
         return clean_post(await self._complete(prompt), self._unbold)
 
     async def audit_claims(self, post: str, brief: str, facts: list[str]) -> list[str]:
@@ -393,7 +404,7 @@ class Writer:
     async def fix(self, draft: str, issues: list[str]) -> str:
         """Step 7d: repair the specific rule breaks the checker found, nothing else."""
         instruction = "Fix exactly these problems and leave every other line as it is:\n" + "\n".join(f"- {i}" for i in issues)
-        prompt = render(load_prompt("tune"), instruction=instruction, copy_playbook=load_prompt("copy_playbook"), draft=draft)
+        prompt = render(load_prompt("tune"), instruction=instruction, copy_playbook=playbook(), draft=draft)
         return clean_post(await self._complete(prompt), self._unbold)
 
     async def comments(self, post: str, voice: dict[str, Any]) -> list[dict[str, str]]:
@@ -496,6 +507,29 @@ class Writer:
             topic = topic.strip() if isinstance(topic, str) and topic.strip() else None
             return {"reply": reply, "draft_topic": topic, "action": None}
         return {"reply": "That took a couple of lookups too many — ask me again?", "draft_topic": None, "action": None}
+
+    async def ideas(
+        self, slots: list[str], news: list[str], voice: dict[str, Any], avoid: list[str] | None = None, rules: str = "", news_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """One post idea per pillar slot (pillars.toml keys, in order). Raw model output:
+        app/ideas.py validates the tags, the niche, the hooks and the cited headline numbers.
+        avoid: ideas already shown in this chat. rules: his standing constraints."""
+        pillars = load_pillars()
+        prompt = render(
+            load_prompt("ideas"),
+            niche=pillars.niche,
+            pillars=pillars.prompt_text(),
+            slots="\n".join(f"{i}. {key}" for i, key in enumerate(slots, 1)),
+            news="\n".join(f"[{i}] {h}" for i, h in enumerate(news, 1)) or "(none fetched: no idea may claim to be news)",
+            shown="\n".join(f"- {a}" for a in avoid or []) or "(none yet)",
+            rules=rules or "(none)",
+            mode=("Every idea MUST build on one of the numbered headlines above." if news_only else
+                  "Use a headline only when it genuinely fits that slot's pillar; otherwise set news to null."),
+            profile=voice.get("profile") or "\n".join(f"- {f}" for f in voice.get("background") or []) or "(profile not set)",
+            story_bank=voice.get("story_bank") or "(empty)",
+        )
+        ideas = parse_json_object(await self._complete(prompt)).get("ideas")
+        return [i for i in ideas if isinstance(i, dict)] if isinstance(ideas, list) else []
 
     async def extract_voice(self, posts: list[str]) -> dict[str, Any]:
         prompt = render(load_prompt("voice_extraction"), posts="\n\n---\n\n".join(posts))

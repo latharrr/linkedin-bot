@@ -4,9 +4,14 @@ Recently covered (find a fresh angle if related): {recent_topics}
 Similar past posts (match cadence, not content): {few_shot_posts}
 Voice: {voice_profile}
 
+His niche: {niche}
+His content pillars:
+{pillars}
+First decide which pillar this brief belongs to, and whether it fits his niche at all. News or a general topic only fits when it can be told through his own work (a pillar), never as generic tech commentary or growth advice without his story.
+
 Before writing anything, pin down: the ONE idea; one concrete metric (from the research or his background facts only); one counter-intuitive insight; a 2-3 step mechanism (how it actually works); a closing question.
 Hooks and details about him use ONLY his background facts, the voice profile or the brief: never invent a scene, quote, reaction or number.
-Then write three hooks, each from a DIFFERENT framework (dissonance / A to C without B / contrarian / insider reveal / proof first / dated moment), each at most 140 characters and able to stand alone above "see more".
+Then write three hooks, each from a DIFFERENT framework (dissonance / A to C without B / contrarian / insider reveal / proof first / dated moment), each at most 140 characters, able to stand alone above "see more", and opening a curiosity gap (never a thesis statement).
 
 Return ONLY JSON:
 {"insight": "<the one idea, one sentence>",
@@ -17,4 +22,7 @@ Return ONLY JSON:
  "audience": "<who this is for>",
  "sub_template": "<one of: story_cold_open, story_failure_first, story_dialogue, contrarian_myth_bust, contrarian_teardown, insight_list>",
  "angle_note": "<what makes this different from the recent topics>",
- "cta_question": "<one specific, easy-to-answer closing question>"}
+ "cta_question": "<one specific, easy-to-answer closing question>",
+ "pillar": "<the pillar key that fits best>",
+ "niche_fit": true or false,
+ "niche_note": "<if false: one short sentence on why it's outside his niche>"}

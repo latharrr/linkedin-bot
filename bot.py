@@ -41,13 +41,17 @@ from app.chat import (
     wants_bot_to_pick,
 )
 from app.config import Settings, get_settings
+from app.constraints import NO_STORY_NOTE, SETTING_KEY, Constraints
 from app.db import ChatState, Post
 from app.grounding import has_verify_tags
+from app.ideas import Batch, Idea, pitch_ideas
 from app.jev import THRESHOLD as JEV_THRESHOLD
 from app.linkedin import escape_little_text, looks_like_post_url
 from app.linkread import find_urls
 from app.log import get_logger, setup_logging
+from app.pillars import LAST_PILLAR
 from app.pipeline import (
+    OffNiche,
     Ungrounded,
     audit_facts,
     audit_flags,
@@ -127,7 +131,7 @@ MENU_COMMANDS = {
 }
 PUBLISHER_STALE = timedelta(minutes=10)  # the dispatcher runs every 5 min when live
 CROWDED = timedelta(hours=24)
-TIME_HINT = "Best reach: Tue-Thu, 7:30-9 AM. Weekends and Friday afternoons are slow."
+TIME_HINT = "Best window: 8-10 AM IST (your audience is Indian students and founders). Tue-Thu is strongest; weekends are slow."
 STALE_AFTER = {"time", "unq", "asap", "drop"}  # after these, the tapped message's buttons are spent
 # Buttons that only ask ✅/✖ first (→ chat action name). Their message keeps its buttons
 # until the ✅, so a ✖ leaves everything as it was.
@@ -197,6 +201,19 @@ HOUR_BUTTONS = [("🌅 9 AM", "0900"), ("☀️ 12 PM", "1200"), ("🕕 6 PM", "
 WHEN_ASK = "When should it go out? Tap a time, or type one (18:30, or 2026-09-29 08:00 for another day)."
 YES_TO_WHAT = "Yes to what? Nothing is waiting on a yes from me right now. Tell me what you'd like, or check where things stand:"
 CONFIRM_ASKED = "Confirm?"
+# "more ideas" / "what's new" / "what happened today in tech": always a genuinely new fetch,
+# straight to the ideas flow (never the chat model rephrasing what it already showed).
+MORE_IDEAS = re.compile(
+    r"\b(?:more|other|different|new|fresh|another|better)\s+(?:post\s+)?(?:ideas?|topics?|angles?|options?)\b|\bmore\s+interesting\b"
+    r"|\bwhat'?s\s+new\b|\banything\s+(?:else|new|better)\b|\bsomething\s+(?:else|new|different|more\s+interesting)\b",
+    re.IGNORECASE,
+)
+NEWS_ASK = re.compile(
+    r"\b(?:happened|happening|going\s+on)\b.{0,30}\b(?:today|tech|industry|this\s+week|news)\b|\btoday'?s\s+(?:tech\s+)?(?:news|headlines)\b"
+    r"|\b(?:latest|recent|fresh)\s+(?:tech\s+)?(?:news|headlines)\b|\bin\s+the\s+news\b",
+    re.IGNORECASE,
+)
+CONSTRAINT_ONLY_WORDS = 12  # a message this short that set a constraint is just that: acknowledge it
 POST_NOW_BUTTON_ONLY = "Posting right now is button-only: tap ⚡ Now in the time picker, or ⚡ Post now under a scheduled post. It asks you first."
 ACK_ONLY = re.compile(r"^(?:ok(?:ay)?|k+|sure|cool|fine|alright)[\s.!👍]*$", re.IGNORECASE)  # an acknowledgement, not a yes
 # Something only he can supply ("add my referral code") that he hasn't given: ask for it,
@@ -210,7 +227,6 @@ HAS_VALUE = re.compile(r"https?://\S+|\b(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z
 # rides along with the brief as the only personal material the writer may use.
 STAKE_NOTE = "\n\nHis own experience with this, in his words (the only personal material to use, nothing beyond it): {answer}"
 INPUT_NOTE = "\n\nHis {thing}, to use exactly as given (never change or invent it): {answer}"
-NO_STORY_NOTE = "\n\n(No personal story for this one: write it as his informed take, with no anecdote, metric or claim about his own history.)"
 REF_TAG = re.compile(r"[ \t]*[\[(]?\bref[:\s]+[0-9a-f]{6,}[\])]?", re.IGNORECASE)
 TUNE_LABELS = {"short": "✂️ Shortening", "hook": "🎣 Rewriting the hook of", "bold": "🔥 Sharpening"}
 ASK_TOPIC = "What should the post be about? Send a topic or a link — or say \"you pick\" and I'll draft from today's news."
@@ -285,6 +301,7 @@ class Ask:
     note: str  # STAKE_NOTE or INPUT_NOTE, filled with his answer
     thing: str = ""
     offer_no_story: bool = True
+    force: bool = False  # he already chose "✍️ Draft anyway" for an off-niche brief
 
 
 @dataclass
@@ -359,13 +376,17 @@ class BotHandler:
         self.tasks: set[asyncio.Task[Any]] = set()
         self.regenerating: set[str] = set()
         self.memory = ChatMemory()
-        self.ideas: dict[int, list[str]] = {}  # last /ideas per chat, for the ✍️ Draft buttons
+        self.ideas: dict[int, list[Idea]] = {}  # last ideas per chat, for the ✍️ Draft buttons
+        self.off_niche: dict[int, str] = {}  # chat → a brief refused as off-niche, for "✍️ Draft anyway"
         self.interviews: dict[int, dict[str, Any]] = {}  # chat → {"qid", "pressed", "skipped", "answered"}
         self.active_runs: dict[int, ActiveRun] = {}  # chat → the draft generating right now, if any
         self.pending: dict[int, PendingAction] = {}  # chat → the chat action awaiting ✅ / ✖
         self.choosing: dict[int, tuple[str, dict[str, Any], list[str]]] = {}  # chat → (nonce, action, post ids) awaiting a pick
         self.asks: dict[int, Ask] = {}  # chat → a detail only he can give (the grounding gate, a referral code…)
         self.offers: dict[int, tuple[str, str]] = {}  # chat → (nonce, topic) behind a "✍️ New draft on it" button
+        self.rules: dict[int, Constraints] = {}  # chat → what he told the bot to keep out (loaded from settings once)
+        self.shown_ideas: dict[int, list[Idea]] = {}  # chat → every idea pitched in this conversation, never pitched again
+        self.idea_fetches: dict[int, int] = {}  # chat → fetches so far: each new ask reads other keywords
 
     def spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         task = asyncio.create_task(coro)
@@ -430,7 +451,7 @@ class BotHandler:
             if not text.rstrip().endswith("?") and not is_yes(text):  # a question means he moved on; the ask waits
                 del self.asks[chat_id]
                 self.memory.add(chat_id, "user", text)
-                return await self.start_generation(chat_id, ask.brief + ask.note.format(answer=text[:600], thing=ask.thing), long_ok=True)
+                return await self.start_generation(chat_id, ask.brief + ask.note.format(answer=text[:600], thing=ask.thing), long_ok=True, force=ask.force)
         if ((is_yes(text) and not ACK_ONLY.match(text)) or is_no(text)) and not self.asked_a_question(chat_id):
             self.memory.add(chat_id, "user", text)
             if is_no(text):
@@ -439,6 +460,9 @@ class BotHandler:
             return await self.say(chat_id, YES_TO_WHAT, [[("📋 Status", "menu:/status"), ("📝 Drafts", "menu:/drafts"), ("📅 Queue", "menu:/queue")]])
         if text == "/stats":
             return await self.stats_flow(chat_id)
+        changed = await self.note_constraints(chat_id, text)
+        if changed and len(text.split()) <= CONSTRAINT_ONLY_WORDS and "?" not in text and parse_draft_request(text) is None:
+            return await self.tell(chat_id, f"Got it: {'; '.join(changed)}. That holds for ideas and drafts until you say otherwise.")
         request = parse_draft_request(text)
         if request is None and find_urls(text):
             request = DraftRequest(text)  # a pasted link is a request for a post on it
@@ -446,6 +470,10 @@ class BotHandler:
             return await self.on_draft_request(chat_id, text, request)
         if text.startswith("/"):
             return await self.say(chat_id, "Unknown command.\n\n" + HELP)
+        news = bool(NEWS_ASK.search(text))
+        if news or MORE_IDEAS.search(text):  # a new fetch, never a rephrased repeat of what's already on screen
+            self.memory.add(chat_id, "user", text)
+            return await self.ideas_flow(chat_id, news_only=news)
         await self.chat_flow(chat_id, text)
 
     # commands ----------------------------------------------------------------------
@@ -649,37 +677,54 @@ class BotHandler:
         buttons = [[("🔄 Refresh", "status:refresh"), ("📅 Queue", "menu:/queue")], [("📝 Drafts", "menu:/drafts"), ("✍️ New post", "menu:/new")]]
         await self.say(chat_id, await self.status_text(chat_id), buttons)
 
-    async def _fetch_ideas(self) -> list[str]:
-        keywords = self.svc.settings.keywords
-        if not keywords:
-            return []
-        day = self.now().astimezone(IST).toordinal()
-        picks = [keywords[(day + i) % len(keywords)] for i in range(min(IDEAS, len(keywords)))]
-        if self.svc.news is not None:
-            found = await asyncio.gather(*(self.svc.news.topic(k) for k in picks), return_exceptions=True)
-            return [t for t in found if isinstance(t, str)]
-        return [t for t in [await self.svc.researcher.news_topic(keywords, day)] if t]  # one call only: costs research tokens
+    async def get_rules(self, chat_id: int) -> Constraints:
+        if chat_id not in self.rules:
+            raw = await self.db.get_setting(SETTING_KEY.format(chat_id=chat_id))
+            self.rules[chat_id] = Constraints.from_json(raw)
+        return self.rules[chat_id]
 
-    async def ideas_flow(self, chat_id: int) -> None:
-        """Three fresh headlines (one per niche keyword), each with a ✍️ Draft button."""
-        if not self.svc.settings.keywords:
-            return await self.say(chat_id, "Set NICHE_KEYWORDS in .env first, e.g. AI agents,startup,developer tools.")
-        await self.say(chat_id, "💡 Finding fresh ideas…")
-        topics = await self._fetch_ideas()
-        if not topics:
-            return await self.say(chat_id, "No fresh ideas right now. Send me a topic instead.")
-        self.ideas[chat_id] = topics
-        lines = [f"{i}. {t.split(' (niche:', 1)[0][:260]}" for i, t in enumerate(topics, 1)]
-        buttons = [[(f"✍️ Draft {i}", f"idea:{i}") for i in range(1, len(topics) + 1)]]
-        await self.say(chat_id, "💡 Ideas from today's news:\n\n" + "\n\n".join(lines), buttons)
+    async def note_constraints(self, chat_id: int, text: str) -> list[str]:
+        """"keep my personal story out", "no politics", "personal stories are fine again":
+        standing rules, saved until he lifts them. Returns what changed."""
+        rules = await self.get_rules(chat_id)
+        changed = rules.update(text)
+        if changed:
+            log.info("constraints_changed", extra={"changed": changed, "now": rules.describe()})
+            await self.db.set_setting(SETTING_KEY.format(chat_id=chat_id), rules.to_json())
+        return changed
 
-    async def ideas_tool_text(self) -> str:
-        if not self.svc.settings.keywords:
-            return "No niche keywords configured (NICHE_KEYWORDS in .env)."
-        topics = await self._fetch_ideas()
-        if not topics:
-            return "No fresh ideas right now."
-        return "\n".join(f"{i}. {t.split(' (niche:', 1)[0][:260]}" for i, t in enumerate(topics, 1))
+    async def _fetch_ideas(self, chat_id: int, news_only: bool = False) -> Batch:
+        """IDEAS pitches, one per pillar slot (weighted rotation, never the same pillar
+        twice in a row), each with its pillar tag and a curiosity-gap hook; never one
+        already shown in this chat, never one that breaks his rules, news always sourced."""
+        offset = self.idea_fetches.get(chat_id, 0)
+        self.idea_fetches[chat_id] = offset + 1
+        try:
+            return await pitch_ideas(
+                self.svc, IDEAS, shown=self.shown_ideas.get(chat_id, []), constraints=await self.get_rules(chat_id),
+                offset=offset, news_only=news_only,
+            )
+        except Exception as exc:
+            log.warning("ideas_failed", extra={"error": f"{type(exc).__name__}: {exc}"[:200]})
+            return Batch([], "I couldn't put ideas together just now (the model or the news source failed)")
+
+    async def ideas_flow(self, chat_id: int, news_only: bool = False) -> None:
+        await self.say(chat_id, "📰 Checking today's news…" if news_only else "💡 Finding fresh ideas…")
+        await self.show_ideas(chat_id, await self._fetch_ideas(chat_id, news_only))
+
+    async def show_ideas(self, chat_id: int, batch: Batch) -> None:
+        """Each idea with its pillar tag, hook, source if it's news, and a ✍️ Draft button."""
+        if not batch.ideas:
+            text = (batch.note or "No fresh ideas right now") + ". Send me a topic instead."
+            return await self.tell(chat_id, text.replace(".. ", ". "))
+        self.ideas[chat_id] = batch.ideas
+        self.shown_ideas.setdefault(chat_id, []).extend(batch.ideas)
+        text = "💡 Ideas for you:\n\n" + "\n\n".join(f"{i}. {idea.text()}" for i, idea in enumerate(batch.ideas, 1))
+        if batch.note:
+            text += f"\n\n({batch.note})"
+        self.memory.add(chat_id, "assistant", text)
+        buttons = [[(f"✍️ Draft {i}", f"idea:{i}") for i in range(1, len(batch.ideas) + 1)]]
+        await self.say(chat_id, text, buttons)
 
     async def _collect_usage(self) -> dict[str, Any]:
         from app.usage import collect
@@ -762,21 +807,41 @@ class BotHandler:
         self.memory.add(chat_id, "user", text)
         try:
             voice = await self.db.get_voice_profile()
+            rules = await self.get_rules(chat_id)
             run_status = self.run_status_for_model(self.active_runs.get(chat_id))
+            if rules:
+                run_status = f"{run_status or 'No draft is currently running.'}\n{rules.prompt_text()}"
+            pitched: list[Batch] = []
+
+            async def ideas_tool() -> str:
+                pitched[:] = [await self._fetch_ideas(chat_id)]
+                batch = pitched[0]
+                return "\n".join(f"{i}. {idea.text()}" for i, idea in enumerate(batch.ideas, 1)) or (batch.note or "No fresh ideas right now.")
+
             tools = {
                 "status": lambda: self.status_text(chat_id),
                 "queue": lambda: self.posts_tool_text(chat_id, "queued"),
                 "drafts": lambda: self.posts_tool_text(chat_id, "awaiting_choice"),
                 "dashboard": self.dashboard_tool_text,
-                "ideas": self.ideas_tool_text,
+                "ideas": ideas_tool,
             }
             clock = format_ist(self.now())
             out = await self.svc.writer.converse(self.memory.history(chat_id), voice, run_status, tools, clock)
+            facts = [str(f) for f in (voice or {}).get("background") or []]
+            why = rules.breaks(f"{out.get('reply') or ''} {out.get('draft_topic') or ''}", facts, who="chat") if rules and not pitched else None
+            if why:  # it proposed what he ruled out: one retry, told exactly why
+                log.warning("chat_broke_constraint", extra={"why": why})
+                note = {"role": "user", "content": f"(Bot check, not from him: your reply broke his standing rule, {why}. Rules: {rules.describe()}. Answer again without it.)"}
+                out = await self.svc.writer.converse([*self.memory.history(chat_id), note], voice, run_status, tools, clock)
+                if rules.breaks(f"{out.get('reply') or ''} {out.get('draft_topic') or ''}", facts, who="chat") and not pitched:
+                    out = {"reply": f"Keeping to your rules ({rules.describe()}). Want fresh ideas that stay inside them?", "draft_topic": None, "action": None}
         except Exception as exc:
             log.warning("chat_failed", extra={"error": f"{type(exc).__name__}: {exc}"[:200]})
             return await self.say(chat_id, CHAT_DOWN)
         if out.get("action"):
             return await self.chat_action(chat_id, {**out["action"], "said": text})
+        if pitched and not out["draft_topic"]:  # shown by the bot, so every idea keeps its pillar tag, hook, source and ✍️ button
+            return await self.show_ideas(chat_id, pitched[0])
         reply, topic = REF_TAG.sub("", out["reply"]), out["draft_topic"]  # refs are internal, never shown
         implied = None if topic else implied_action(reply, text)
         if implied is not None:  # never confirm a change in plain text: ask with ✅/✖ instead
@@ -885,13 +950,13 @@ class BotHandler:
         said = [m["content"] for m in self.memory.history(chat_id) if m["role"] == "assistant"]
         return bool(said) and ("?" in said[-1] or said[-1].startswith("Want me to draft"))
 
-    async def ask_for_detail(self, chat_id: int, brief: str, problems: Any) -> None:
+    async def ask_for_detail(self, chat_id: int, brief: str, problems: Any, force: bool = False) -> None:
         """The grounding gate blocked the draft: ask him for the real detail instead of
         delivering an invented one. Nothing was saved."""
         base = brief.split(STAKE_NOTE.split("{", 1)[0], 1)[0].removesuffix(NO_STORY_NOTE)
         blank = any(why == "a blank only you can fill" for why in problems.values())
         offer = not brief.endswith(NO_STORY_NOTE) and not blank
-        ask = Ask(secrets.token_hex(4), base, STAKE_NOTE, offer_no_story=offer)
+        ask = Ask(secrets.token_hex(4), base, STAKE_NOTE, offer_no_story=offer, force=force)
         self.asks[chat_id] = ask
         question = (
             "Reply with the missing detail and I'll put it in exactly as you send it."
@@ -911,7 +976,7 @@ class BotHandler:
             return "Expired"
         del self.asks[chat_id]
         if choice == "none" and ask.offer_no_story:
-            await self.start_generation(chat_id, ask.brief + NO_STORY_NOTE, long_ok=True)
+            await self.start_generation(chat_id, ask.brief + NO_STORY_NOTE, long_ok=True, force=ask.force)
             return "On it"
         await self.tell(chat_id, "Okay — dropped it. Nothing was saved.")
         return "Dropped"
@@ -1131,7 +1196,7 @@ class BotHandler:
             return None
 
     # generation --------------------------------------------------------------------
-    async def start_generation(self, chat_id: int, brief: str, echo: bool = False, long_ok: bool = False) -> None:
+    async def start_generation(self, chat_id: int, brief: str, echo: bool = False, long_ok: bool = False, force: bool = False) -> None:
         """echo: say what the drafts will be about when the brief was worded by the bot
         (extracted from "make a post about …", written by the chat model, or from the news).
         long_ok: the brief carries his answer to a question the bot asked (Ask)."""
@@ -1147,18 +1212,28 @@ class BotHandler:
         running = self.active_runs.get(chat_id)
         if running is not None:  # one brief at a time per chat — never start a second run underneath it
             return await self.say(chat_id, self.run_status_text(running))
-        about = f" about:\n{brief}\n\n" if echo else ". "
+        rules = await self.get_rules(chat_id)
+        shown_brief, brief = brief, rules.brief(brief)  # his standing rules ride along, for the writer and the gate
+        about = f" about:\n{shown_brief}\n\n" if echo else ". "
         await self.say(chat_id, f"On it — researching and writing your post{about}Takes 3–5 minutes.")
-        run = ActiveRun(brief=brief, started_at=self.now())
+        run = ActiveRun(brief=shown_brief, started_at=self.now())
         self.active_runs[chat_id] = run
-        run.task = self.spawn(self._generate(chat_id, brief, run))
+        run.task = self.spawn(self._generate(chat_id, brief, run, force))
 
-    async def _generate(self, chat_id: int, brief: str, run: ActiveRun) -> None:
+    async def _generate(self, chat_id: int, brief: str, run: ActiveRun, force: bool = False) -> None:
         try:
-            await run_brief(self.svc, chat_id, brief, on_stage=lambda s: setattr(run, "stage", s))
+            await run_brief(self.svc, chat_id, brief, on_stage=lambda s: setattr(run, "stage", s), force=force)
         except Ungrounded as exc:
             log.warning("generation_ungrounded", extra={"problems": len(exc.problems)})
-            await self.ask_for_detail(chat_id, brief, exc.problems)
+            await self.ask_for_detail(chat_id, brief, exc.problems, force)
+        except OffNiche as exc:
+            self.off_niche[chat_id] = brief
+            await self.say(
+                chat_id,
+                f"I didn't draft this: it's outside your niche ({exc.note}). Nothing was saved.\n\n"
+                "Tap to draft it anyway, or send an angle through your own work.",
+                [[("✍️ Draft anyway", "niche:go")]],
+            )
         except Exception as exc:
             log.exception("generation_failed")
             await self.say(chat_id, f"Generation failed: {type(exc).__name__}: {str(exc)[:300]}")
@@ -1214,6 +1289,15 @@ class BotHandler:
                 return
             if data and data.startswith("new:"):
                 answer = await self.on_offer_button(chat_id, data)
+                return
+            if data == "niche:go":
+                brief = self.off_niche.pop(chat_id, None)
+                if brief is None:
+                    return
+                if message_id is not None:
+                    await self._clear_buttons(chat_id, message_id)
+                await self.start_generation(chat_id, brief, force=True)
+                answer = "Drafting anyway"
                 return
             if data and data.startswith("act:"):
                 answer = await self.on_action_button(chat_id, data)
@@ -1369,7 +1453,9 @@ class BotHandler:
         n = data.split(":", 1)[1]
         if not n.isdigit() or not 1 <= int(n) <= len(ideas):
             return "Expired — run /ideas again"
-        await self.start_generation(chat_id, ideas[int(n) - 1], echo=True)
+        idea = ideas[int(n) - 1]
+        await self.db.set_setting(LAST_PILLAR, idea.pillar.key)  # the rotation counts what he drafts
+        await self.start_generation(chat_id, idea.brief(), echo=True)
         return f"Drafting idea {n}"
 
     async def _tune(self, post: Post, which: str, mode: str) -> None:
@@ -1516,13 +1602,14 @@ async def fallback(svc: Services, now: datetime) -> str:
     if await svc.db.any_post_since(ist_day_start(now)):
         log.info("fallback_skipped_brief_exists")
         return "skipped"
-    topic = await svc.researcher.news_topic(svc.settings.keywords, now.astimezone(IST).toordinal())
-    if not topic:
-        await svc.messenger.send_text(chat_id, "No brief today and no fallback news topic found. Send a brief anytime.")
+    rules = Constraints.from_json(await svc.db.get_setting(SETTING_KEY.format(chat_id=chat_id)))
+    ideas = (await pitch_ideas(svc, 1, constraints=rules)).ideas  # a pillar idea (news only as raw material), within his rules
+    if not ideas:
+        await svc.messenger.send_text(chat_id, "No brief today and no idea that fits your pillars. Send a brief anytime.")
         return "no_topic"
-    await svc.messenger.send_text(chat_id, f"No brief today — drafting from the news:\n{topic}")
+    await svc.messenger.send_text(chat_id, f"No brief today — drafting this one:\n{ideas[0].text()}")
     try:
-        await run_brief(svc, chat_id, topic)
+        await run_brief(svc, chat_id, rules.brief(ideas[0].brief()))
     except Exception as exc:
         log.exception("fallback_failed")
         await svc.messenger.send_text(chat_id, f"Fallback generation failed: {type(exc).__name__}: {str(exc)[:300]}")

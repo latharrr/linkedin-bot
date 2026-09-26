@@ -1,0 +1,45 @@
+# Niche + content pillars. Edit and restart the bot (docker compose up -d --build): no code changes.
+#
+# niche: every idea and every draft is filtered through this line; an idea that doesn't
+#        fit it is dropped, and a brief that doesn't fit it is refused (say "draft anyway: <topic>"
+#        to override).
+# weight: relative share of ideas, any positive numbers (they're normalised). The same pillar
+#         is never picked twice in a row.
+# examples: seeds for the ideas model, not a script. Real work only.
+
+niche = "a student founder's-office operator who builds AI and growth systems in public and translates between engineering and business"
+
+[[pillar]]
+key = "build"
+name = "Build in public"
+weight = 30
+about = "What shipped this week and what it took: ProofMart, this LinkedIn bot, the VPS setup, College-CLI."
+examples = ["the bot that drafts his posts", "moving everything onto one VPS", "College-CLI"]
+
+[[pillar]]
+key = "attribution"
+name = "Attribution & growth systems"
+weight = 25
+about = "His owned territory: fingerprinting, KPI digests, the 79-table Supabase, channel-level data, knowing which channel actually worked."
+examples = ["the 79-table KPI digest", "fingerprinting a signup back to its channel", "channel-level data vs gut feel"]
+
+[[pillar]]
+key = "cs_metaphor"
+name = "CS → startup metaphors"
+weight = 20
+about = "A computer-science concept explaining a startup or team problem. The Deadlocks post did 633 impressions."
+examples = ["race conditions in team comms", "caching in decision-making", "garbage collection as feature pruning"]
+
+[[pillar]]
+key = "personal"
+name = "Personal stakes"
+weight = 15
+about = "Student life, family, money, promises kept or broken. The ASUS ROG post got 18 reactions, his highest ever."
+examples = ["what a laptop purchase really cost", "a promise to family", "money as a student founder"]
+
+[[pillar]]
+key = "ai_war_story"
+name = "Honest AI war stories"
+weight = 10
+about = "What broke in prod and how he fixed it: the Groq 429 saga, fallback chains, models inventing facts."
+examples = ["the Groq 429 saga", "a five-model fallback chain", "the day the model invented a ref"]

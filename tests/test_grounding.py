@@ -144,7 +144,7 @@ def blocked(monkeypatch):
     """run_brief blocks the first time, then records the brief it was given."""
     briefs: list[str] = []
 
-    async def fake_run_brief(svc, chat_id, brief, on_stage=None):
+    async def fake_run_brief(svc, chat_id, brief, on_stage=None, **_):
         briefs.append(brief)
         if len(briefs) == 1:
             problems = Problems()
@@ -196,7 +196,7 @@ async def test_a_question_while_asked_is_not_taken_as_the_answer(h, fakes, block
 async def test_referral_code_is_asked_for_never_invented(h, fakes, monkeypatch):
     briefs: list[str] = []
 
-    async def fake_run_brief(svc, chat_id, brief, on_stage=None):
+    async def fake_run_brief(svc, chat_id, brief, on_stage=None, **_):
         briefs.append(brief)
 
     monkeypatch.setattr(botmod, "run_brief", fake_run_brief)
@@ -238,7 +238,7 @@ async def test_topic_that_matches_nothing_says_so_and_never_invents_a_ref(h, fak
     assert buttons(fakes)[0] == "menu:/drafts"
     started: list[str] = []
 
-    async def fake_run_brief(svc, chat_id, brief, on_stage=None):
+    async def fake_run_brief(svc, chat_id, brief, on_stage=None, **_):
         started.append(brief)
 
     monkeypatch.setattr(botmod, "run_brief", fake_run_brief)

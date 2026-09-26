@@ -2,6 +2,7 @@
 /dashboard formatting, and the mobile-shape step (length, hook, paragraph splitting)."""
 
 import asyncio
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -235,19 +236,16 @@ class FakeNews:
         return self.topics.get(keyword)
 
 
-async def test_ideas_offer_draft_buttons_and_start_a_run(h, fakes, monkeypatch):
-    monkeypatch.setattr(h.svc.settings, "niche_keywords", "AI agents,startup,developer tools")
-    h.svc.news = FakeNews({
-        "AI agents": "Why Everyone Is Talking About Jev — the AI that doesn't chat (niche: AI agents; source: https://forbes.com/jev)",
-        "startup": "One Facebook for every startup failure? — VC math (niche: startup; source: https://x.com/vc)",
-    })
+async def test_ideas_are_pillar_tagged_with_hooks_and_draft_buttons(h, fakes):
     await h.on_text(CHAT_ID, "💡 Ideas")
     text, kb = fakes["messenger"].sent[-1][2]
-    assert "1. Why Everyone Is Talking About Jev" in text and "(niche:" not in text
-    assert kb == [[("✍️ Draft 1", "idea:1"), ("✍️ Draft 2", "idea:2")]]
+    tags = re.findall(r"^\d\. (\[[^\]]+\])", text, re.M)
+    assert len(tags) == 3 and all(x != y for x, y in zip(tags, tags[1:], strict=False))  # never the same pillar twice in a row
+    assert text.count("“") == 3  # a hook per idea
+    assert kb == [[("✍️ Draft 1", "idea:1"), ("✍️ Draft 2", "idea:2"), ("✍️ Draft 3", "idea:3")]]
     await h.on_callback(CHAT_ID, "cb", "idea:1")
     await drain(h)
-    assert next(iter(fakes["db"].posts.values()))["brief"].startswith("Why Everyone Is Talking About Jev")
+    assert next(iter(fakes["db"].posts.values()))["brief"].startswith("Idea: ")
 
 
 async def test_idea_buttons_expire_after_restart(h, fakes):
@@ -284,16 +282,11 @@ async def test_dashboard_tool_text_has_no_extra_status_or_progress_lines(h, fake
     assert "🟢 Groq — Writer" in text and "📋 Status" not in text and "Checking every API" not in text
 
 
-async def test_ideas_tool_text_lists_topics_without_niche_tag_or_buttons(h, fakes, monkeypatch):
-    monkeypatch.setattr(h.svc.settings, "niche_keywords", "AI agents,startup")
-    h.svc.news = FakeNews({"AI agents": "Why Everyone Is Talking About Jev (niche: AI agents; source: https://forbes.com/jev)"})
-    text = await h.ideas_tool_text()
-    assert text == "1. Why Everyone Is Talking About Jev" and CHAT_ID not in h.ideas
-
-
-async def test_ideas_tool_text_without_keywords_configured(h, fakes, monkeypatch):
-    monkeypatch.setattr(h.svc.settings, "niche_keywords", "")
-    assert "NICHE_KEYWORDS" in await h.ideas_tool_text()
+async def test_ideas_asked_in_chat_are_shown_by_the_bot_with_buttons(h, fakes):
+    fakes["nvidia"].chat_reply = [{"reply": "", "draft_topic": None, "tool_call": "ideas"}, {"reply": "Here you go.", "draft_topic": None}]
+    await h.on_text(CHAT_ID, "what should I post about?")
+    text, kb = fakes["messenger"].sent[-1][2]
+    assert text.startswith("💡 Ideas for you:") and kb[0][0] == ("✍️ Draft 1", "idea:1")
 
 
 async def test_posts_tool_text_matches_the_queue_and_drafts_commands(h, fakes):
@@ -947,7 +940,7 @@ async def test_crowded_schedule_gets_a_heads_up_and_a_time_hint(h, fakes):
     fakes["db"].add_post(status="queued", chosen="a", scheduled_at=NOW + timedelta(hours=5), draft_b="")
     post = fakes["db"].add_post(draft_b="")
     await tap(h, "pick", post.id, "a")
-    assert "Best reach: Tue-Thu" in fakes["messenger"].texts()[-1]
+    assert "Best window: 8-10 AM IST" in fakes["messenger"].texts()[-1]
     await tap(h, "time", post.id, "6pm")
     assert fakes["messenger"].texts()[-1].startswith("Heads-up: another post goes out")
 

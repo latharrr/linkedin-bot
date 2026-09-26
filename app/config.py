@@ -93,8 +93,6 @@ class Settings(BaseSettings):
     nvidia_max_tokens: int = 4096
     nvidia_disable_thinking: bool = True  # see app/nvidia.py THINKING_OFF
     draft_temperature: float = 0.85
-    # Fold 𝐛𝐨𝐥𝐝-Unicode to plain text in drafts. Off: the author's master profile allows it on LinkedIn.
-    unbold_drafts: bool = False
 
     # Tavily: required for research_provider=tavily, otherwise an optional fallback
     tavily_api_key: SecretStr | None = None

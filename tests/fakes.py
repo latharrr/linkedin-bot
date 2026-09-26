@@ -10,6 +10,7 @@ import copy
 import hashlib
 import io
 import json
+import re
 import statistics
 import uuid
 from datetime import UTC, datetime
@@ -62,6 +63,22 @@ async def _no_sleep(_: float) -> None:
     return None
 
 
+IDEA_TEXT = {  # distinct per pillar, like real pitches (similar ones are dropped as repeats)
+    "build": "Shipping the bot that drafts posts: the approval gate mattered more than the model.",
+    "attribution": "Fingerprinting signups back to a channel beat the install counter.",
+    "cs_metaphor": "Race conditions explain why two teams both thought the other owned onboarding.",
+    "personal": "A laptop bought on sale, and the promise that came with it.",
+    "ai_war_story": "A five-model fallback chain and the 429 that still got through.",
+}
+IDEA_HOOK = {
+    "build": "The bot wrote 40 drafts. I kept one........",
+    "attribution": "Our best channel was a poster nobody tracked........",
+    "cs_metaphor": "Two teams, one onboarding flow, zero owners........",
+    "personal": "The laptop cost more than the price tag........",
+    "ai_war_story": "Five models deep and it still said 429........",
+}
+
+
 class FakeNvidia:
     """Handles chat/completions, embeddings and FLUX exactly like NIM responds."""
 
@@ -90,6 +107,8 @@ class FakeNvidia:
         self.comment_prompts: list[str] = []
         self.audit_prompts: list[str] = []
         self.tune_prompts: list[str] = []
+        self.idea_prompts: list[str] = []
+        self.ideas_reply: list[dict[str, Any]] | None = None
 
     def client(self) -> NvidiaClient:
         http = httpx.AsyncClient(transport=httpx.MockTransport(self))
@@ -130,6 +149,15 @@ class FakeNvidia:
                 {"template": "Missing piece", "text": "The attribution argument misses one piece: offline activations never show up in ad dashboards, so the channel that looks weakest is often the one filling the room. Which one did you under-count?"},
                 {"template": "Sharper question", "text": "The harder version of this question is what you stop funding when the numbers finally show up. Most teams can measure a channel long before they can bring themselves to cut it."},
             ]})
+        elif user.startswith("You pitch LinkedIn post ideas"):
+            self.idea_prompts.append(user)
+            slots = re.findall(r"^\d+\. (\w+)$", user.split("in this order:\n", 1)[1].split("\n\n", 1)[0], re.M)
+            reply = [{**i, "pillar": slots[n % len(slots)]} if i.get("pillar") == "*" else i for n, i in enumerate(self.ideas_reply or [])]
+            ideas = reply if self.ideas_reply is not None else [
+                {"pillar": key, "idea": IDEA_TEXT.get(key, f"The {key} angle."), "hook": IDEA_HOOK.get(key, f"{key} surprised everyone........"), "news": None, "fits_niche": True}
+                for key in slots
+            ]
+            text = json.dumps({"ideas": ideas})
         elif user.startswith("Write the headline for this LinkedIn post's cover image"):
             text = "Your AI agent needs a boss"
         elif user.startswith("You are the final editor"):

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from app import storybank
+from app.constraints import Constraints, personal_lines, rules_in_brief
 from app.db import Post
 from app.grounding import (
     REPEAT_WINDOW,
@@ -31,6 +32,7 @@ from app.grounding import (
 from app.images import hook_of
 from app.linkread import brief_with_titles
 from app.log import get_logger
+from app.pillars import LAST_PILLAR, load_pillars
 from app.research import format_research, research_corpus
 from app.services import Services
 from app.style_check import (
@@ -40,6 +42,7 @@ from app.style_check import (
     fixable_issues,
     invented_details,
     post_hook,
+    ps_ending,
 )
 from app.telegram_ui import send_preview
 from app.timeutil import IST, utcnow
@@ -62,6 +65,14 @@ class PipelineError(RuntimeError):
     pass
 
 
+class OffNiche(PipelineError):
+    """The outline found the brief outside his niche (pillars.toml). Nothing was written."""
+
+    def __init__(self, note: str) -> None:
+        super().__init__(note)
+        self.note = note
+
+
 @dataclass
 class Generated:
     brief: str
@@ -71,6 +82,7 @@ class Generated:
     embedding: list[float]
     drafts: dict[str, str]
     images: dict[str, bytes]
+    pillar: str | None = None  # pillars.toml key the outline filed this under
 
 
 async def load_voice(svc: Services) -> dict[str, Any]:
@@ -299,6 +311,8 @@ async def write_drafts(
         polished = await rewrite_without(svc, brief, outline, facts, voice, cand_a, cand_b, seen, corpus, facts_about_him, sources) or polished
     post = polished
     post = await fit_shape(svc.writer, post, corpus, [str(h) for h in outline.get("hooks") or []])
+    cta = str(outline.get("cta_question") or "")
+    post = ps_ending(unbold(post), cta)  # hard rules: no bold, ends on a P.S. question
     # The grounding gate: anything about him that isn't traceable, copied from his profile
     # card, reused from a recent post or left as a blank never ships. One grounded rewrite,
     # told exactly what to leave out; if that still has problems, he's asked (Ungrounded).
@@ -310,7 +324,7 @@ async def write_drafts(
         still = await check(retry) if retry else problems
         if still:
             raise Ungrounded(still)
-        post = retry  # type: ignore[assignment]
+        post = ps_ending(unbold(retry), cta)  # type: ignore[arg-type]
     post = mark_unverified(post, corpus, his_names(facts_about_him))  # third-party numbers nobody backs: [verify]
     research["claim_flags"] = {"a": [], "b": []}  # nothing ungrounded reaches him
     research["claims_used"] = claims_about_him(post, his_names(facts_about_him))  # the no-repeat log
@@ -340,6 +354,11 @@ class GateCheck:
         names = his_names(self.facts)
         problems = Problems()  # most specific reason first: a line keeps the first one it gets
         problems.add(placeholder_lines(post), "a blank only you can fill")
+        rules = rules_in_brief(self.brief)  # what he told the bot to keep out ("no personal stories", "no politics")
+        if rules.no_personal:
+            problems.add(personal_lines(post, self.facts), "a personal story, and you asked to keep those out")
+        for topic in rules.avoid:
+            problems.add([ln for ln in post.splitlines() if ln.strip() and Constraints(avoid=[topic]).breaks(ln, [])], f"about {topic}, which you ruled out")
         problems.add(repeated_claims(post, self.recent, names), "already used in a post from the last 14 days")
         problems.add(lifted_lines(post, self.profile), "copied from your profile")
         problems.add(unverified_about_him(post, self.corpus, names), "a number about you nothing backs")
@@ -553,9 +572,10 @@ async def make_images(svc: Services, drafts: dict[str, str], outline: dict[str, 
     return {"a": image, "b": image}
 
 
-async def generate(svc: Services, brief: str, on_stage: Any = None) -> Generated:
+async def generate(svc: Services, brief: str, on_stage: Any = None, force: bool = False) -> Generated:
     """Steps 1–9, without any writes. on_stage(name): a coarse progress callback
-    (e.g. for reporting "still researching" to a Telegram chat that asks for status)."""
+    (e.g. for reporting "still researching" to a Telegram chat that asks for status).
+    force: draft even if the outline says the brief is outside his niche (else OffNiche)."""
     stage = on_stage or (lambda _name: None)
     voice = await load_voice(svc)  # step 4 first: fail fast before paid calls
     stored_brief = brief
@@ -584,6 +604,9 @@ async def generate(svc: Services, brief: str, on_stage: Any = None) -> Generated
     outline = await grounded_outline(  # step 5 (+ audit: the angle must match his own account)
         svc, brief, format_research(research), recent_topics_text(similar), few_shot, pen, background + rules
     )
+    if outline.get("niche_fit") is False and not force:
+        raise OffNiche(str(outline.get("niche_note") or "it doesn't fit your niche or any pillar").strip())
+    pillar = load_pillars().get(str(outline.get("pillar") or ""))
     # The author's sourced background facts travel with the row so the number check (and any
     # later preview/regen) treats "15+ tools in 8 weeks" as verified, not invented.
     research = {**research, "outline": outline, "background": background, "claim_rules": [str(r) for r in voice.get("claim_rules") or []]}
@@ -600,6 +623,7 @@ async def generate(svc: Services, brief: str, on_stage: Any = None) -> Generated
         embedding=embedding,
         drafts=drafts,
         images=images,
+        pillar=pillar.key if pillar else None,
     )
 
 
@@ -653,9 +677,11 @@ async def preview(svc: Services, post: Post) -> None:
     )
 
 
-async def run_brief(svc: Services, chat_id: int, brief: str, on_stage: Any = None) -> Post:
+async def run_brief(svc: Services, chat_id: int, brief: str, on_stage: Any = None, force: bool = False) -> Post:
     """Full pipeline for a Telegram brief: generate → upload → insert (step 10) → preview (step 11)."""
-    gen = await generate(svc, brief, on_stage)
+    gen = await generate(svc, brief, on_stage, force)
+    if gen.pillar:  # the rotation: the next ideas start from a different pillar
+        await optional(lambda: svc.db.set_setting(LAST_PILLAR, gen.pillar), None, "last_pillar")
     stage = on_stage or (lambda _name: None)
     stage("saving")
     post_id = str(uuid.uuid4())

@@ -1,4 +1,5 @@
 COPYWRITING PLAYBOOK (LinkedIn, mobile-first)
+0. NICHE: he is {niche}. Every post sits inside that. Generic tech commentary or generic growth advice with no story of his is dead for him (his "Trust Tax" post did 187 impressions, "Acquisition vs Retention" 126).
 1. HOOK = the first 1-2 lines, at most 140 characters. A phone shows only this before "see more", so it must work alone and reveal about 80% (the result) while holding back the how. Use ONE framework:
    - Dissonance: a bad event, an unexpected reaction.
    - A to C without B: where he started and where he is now, method hidden.
@@ -7,7 +8,8 @@ COPYWRITING PLAYBOOK (LinkedIn, mobile-first)
    - Proof first: a real, verified metric of his up front, only from his background facts.
    - Dated moment: a real date or period from his profile, and what he saw then.
    Every hook uses only real facts. Don't reuse the same opening shape two posts in a row.
-   Never open with a generic truth, a definition, or a question you answer right away.
+   It must open a CURIOSITY GAP: show the result, the moment or the tension, hold back the how or the why ("Humanity has peaked........" did 877 impressions, his best).
+   Never open with a thesis statement, advice, a generic truth, a definition, or a question you answer right away.
 2. RE-HOOK: line 2 raises the stakes or opens a loop that the post closes later.
 3. ONE IDEA per post. If a line doesn't serve it, cut it.
 4. STRUCTURE:
@@ -15,14 +17,16 @@ COPYWRITING PLAYBOOK (LinkedIn, mobile-first)
    - contrarian: the common belief → why it breaks (problem, agitate) → what actually works (2-3 steps) → proof.
    - list: one-line promise → 3-5 bullets, one line each, parallel wording → a one-line takeaway.
 5. TRUTH: every detail about his own life and work (events, dates, quotes, people's reactions, tools, timelines, results) must come from his background facts, the voice profile or the brief. NEVER invent a scene, a quote, a reaction or a number to make the story vivid. If a vivid detail isn't known, write the known fact plainly. Research statistics describe the market or other companies: never present them as something that happened at his company or as a result of his work.
+5b. PERSONAL STAKE BEFORE THE LESSON: before any lesson, show what he did, broke or paid for, using only facts from his background, story bank or the brief. If the brief isn't his story, connect it to his real work; never invent an experience.
+5c. DE-INFLATE: honest status labels (a side project is a side project, a prototype is a prototype), real numbers only, no borrowed credibility (never lean on famous names or companies to sound bigger).
 6. PROOF: at least one concrete number or result, at most 2 statistics, only from the research or his background facts, with the source named inside the sentence ("KPMG's Q2 survey found…"). No dates or citations in brackets. Show what it cost him (time, money, a mistake): real stakes earn trust.
 7. RHYTHM: mostly 1-sentence paragraphs; no paragraph over 2 lines. Mix short punches with one longer sentence. Active voice. Cut filler (very, really, just, actually, basically).
 8. FLOW: AND → BUT → THEREFORE. Each line earns the next.
 9. HIS WORK: every post is written by him, so connect the topic to his real work where it genuinely fits (PicaPool, ProofMart, UniLyf, his projects, his through-line of traceable outcomes, his themes). Say only what the WHO HE IS section states: what he built, what he does, what he learned. Never invent incidents, conversations, failures, numbers or outcomes around those facts. If the brief is his own story, tell it in the first person; if not, it is his informed take backed by the research. Make the lesson usable tomorrow.
-10. ENDING: a one-line takeaway, then ONE specific question that is easy to answer from experience (not "Thoughts?" or "Agree?").
+10. ENDING: a one-line takeaway, then a last line "P.S. <ONE genuine question>" that is easy to answer from experience (not "Thoughts?" or "Agree?"). His questions are what earn his comments.
 11. LENGTH: 900-1,400 characters in total (about 150-230 words). Shorter beats padded.
 12. TONE: human, dry and direct. Add a light touch of sarcasm, level 1 or 2 out of 10: one wry aside or understatement in the whole post, aimed at a situation or at himself, never at people. Don't force it.
 13. SOUND HUMAN: no em dashes or en dashes (use a comma, a full stop or "and"); no label lines like "Lesson:", "Bottom line:", "The result?"; none of: here's the kicker, let's dive in, in a world where, seamless, robust, transformative, navigate the, it's worth noting, moreover, furthermore, unleash, harness the power, revolutionize, cutting-edge, at the end of the day. Write like he talks. But don't over-clean: a post with no reaction, no opinion and no concrete detail is also a machine tell. Keep one real reaction.
-14. FORMAT: plain text, no markdown (** or #), no numbered emoji (1️⃣); a blank line between paragraphs, no emoji bullets, no emoji, 0-2 niche hashtags on the last line. No links in the post body (they cut reach); a source link goes in the first comment.
+14. FORMAT: plain text, no markdown (** or #), no numbered emoji (1️⃣); a blank line between paragraphs, no emoji bullets, no emoji, no bold-Unicode lettering (𝐥𝐢𝐤𝐞 𝐭𝐡𝐢𝐬), 0-2 niche hashtags on the last line (never a hashtag dump). No links in the post body (they cut reach); a source link goes in the first comment.
 15. GROUNDED OR NOTHING: every claim about his history, employers, metrics or timelines must be traceable to the brief, his profile or his story bank. If this idea has no real personal stake of his, drop the personal opening and write it as his informed take; never invent one. A post that makes something up is thrown away, not published.
 16. NO COPY, NO REPEAT: his profile is context, never text to paste; never lift its sentences or its credentials list ("15+ production internal tools", "event-fingerprinting attribution system", "CRM with role-based access") into a post. Use ONE specific anecdote tied to THIS post's idea. Anything listed under used_in_last_14_days_do_not_reuse in the voice profile was already told in a recent post: don't reuse that achievement, metric or story; pick a different real one or reframe.
