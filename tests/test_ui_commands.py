@@ -125,10 +125,18 @@ async def test_new_image_replaces_both_urls_and_sends_one_photo(h, fakes):
     assert len(fakes["nvidia"].image_calls) == 1
 
 
+async def confirm(h, fakes):
+    """Tap ✅ on the latest ✅/✖ question (🗑 and ↩️ always ask first)."""
+    yes = next(cb for _, cb in fakes["messenger"].keyboards()[-1][0] if cb.startswith("act:yes:"))
+    await h.on_callback(CHAT_ID, "cb-yes", yes)
+
+
 async def test_discard_waiting_and_queued_posts(h, fakes):
     waiting, queued = fakes["db"].add_post(), fakes["db"].add_post(status="queued", chosen="a", scheduled_at=NOW)
-    await tap(h, "drop", waiting.id)
-    await tap(h, "drop", queued.id)
+    for p in (waiting, queued):
+        await tap(h, "drop", p.id)
+        assert fakes["db"].posts[p.id]["status"] != "failed"  # the tap only asks
+        await confirm(h, fakes)
     for p in (waiting, queued):
         assert fakes["db"].posts[p.id]["status"] == "failed" and fakes["db"].posts[p.id]["error"] == "discarded by user"
     await tap(h, "pick", waiting.id, "a")  # a discarded post's buttons are dead
@@ -146,6 +154,8 @@ async def test_show_resends_the_preview(h, fakes):
 async def test_unschedule_returns_to_time_picker(h, fakes):
     post = fakes["db"].add_post(status="queued", chosen="b", scheduled_at=NOW + timedelta(hours=8))
     await tap(h, "unq", post.id)
+    assert fakes["db"].posts[post.id]["status"] == "queued"  # the tap only asks
+    await confirm(h, fakes)
     row = fakes["db"].posts[post.id]
     assert row["status"] == "awaiting_choice" and row["scheduled_at"] is None and row["chosen"] == "b"
     assert fakes["messenger"].keyboards()[-1] == time_keyboard(post.id)
@@ -156,6 +166,8 @@ async def test_unschedule_returns_to_time_picker(h, fakes):
 async def test_post_now_moves_schedule_up(h, fakes):
     post = fakes["db"].add_post(status="queued", chosen="a", scheduled_at=NOW + timedelta(hours=8))
     await tap(h, "asap", post.id)
+    assert fakes["db"].posts[post.id]["scheduled_at"] == NOW + timedelta(hours=8)  # the tap only asks
+    await confirm(h, fakes)
     assert fakes["db"].posts[post.id]["scheduled_at"] == NOW + timedelta(minutes=2)
     assert fakes["db"].posts[post.id]["status"] == "queued"
 
@@ -554,14 +566,30 @@ async def test_own_story_gets_at_most_two_outside_facts(svc, fakes):
     assert gen.research["mode"] == "story" and len(gen.research["results"]) == 2
 
 
-async def test_flags_the_audit_keeps_are_shown_under_the_draft(svc, fakes):
-    from app.pipeline import run_brief
+async def test_ungrounded_claims_block_the_draft_instead_of_a_warning(svc, fakes):
+    """The grounding gate: a claim about him that survives the grounded rewrite is never
+    delivered with a ⚠ — nothing is saved or sent, and the bot asks him instead."""
+    from app.pipeline import Ungrounded, run_brief
 
     fakes["nvidia"].unsupported = ["My post was flagged by LinkedIn."]
-    post = await run_brief(svc, 42, "student founders quitting")
-    assert post.research["claim_flags"]["a"] == ["My post was flagged by LinkedIn."]
+    with pytest.raises(Ungrounded) as exc:
+        await run_brief(svc, 42, "student founders quitting")
+    assert "My post was flagged by LinkedIn." in exc.value.problems
+    assert not fakes["db"].posts
+    assert not any(t.startswith("YOUR POST") for t in fakes["messenger"].texts())
+
+
+async def test_grounded_rewrite_that_drops_the_claim_ships_clean(svc, fakes, monkeypatch):
+    import app.pipeline as pipeline
+
+    async def audit(writer, text, brief, facts, sources=""):  # only the first final post makes the claim
+        return ["My post was flagged by LinkedIn."] if "final post" in text else []
+
+    monkeypatch.setattr(pipeline, "audit_flags", audit)
+    post = await pipeline.run_brief(svc, 42, "student founders quitting")
+    assert "rewritten post" in post.draft_a and post.research["claim_flags"]["a"] == []
     draft_a = next(t for t in fakes["messenger"].texts() if t.startswith("YOUR POST"))
-    assert "⚠ check: “My post was flagged by LinkedIn.” — not in your brief or background" in draft_a
+    assert "⚠ check" not in draft_a
 
 
 def test_his_own_edits_carry_no_flags():
@@ -573,14 +601,14 @@ def test_his_own_edits_carry_no_flags():
     assert claim_flags_for(post) == {"a": [], "b": ["y"]}
 
 
-async def test_tune_refreshes_the_flags_for_that_draft(h, fakes):
-    post = fakes["db"].add_post(research={"results": [], "outline": {"hooks": ["h"]}, "claim_flags": {"a": ["old flag"], "b": ["keep"]}})
+async def test_tune_that_adds_an_ungrounded_claim_keeps_the_original(h, fakes):
+    post = fakes["db"].add_post(research={"results": [], "outline": {"hooks": ["h"]}, "claim_flags": {"a": [], "b": []}})
     fakes["nvidia"].unsupported = ["I launched it in May."]
     await tap(h, "tune", post.id, "a-bold")
     await drain(h)
-    flags = fakes["db"].posts[post.id]["research"]["claim_flags"]
-    assert flags == {"a": ["I launched it in May."], "b": ["keep"]}
-    assert "⚠ check: “I launched it in May.”" in fakes["messenger"].texts()[-1]
+    assert fakes["db"].posts[post.id]["draft_a"] == "draft A text"
+    assert "kept the original" in fakes["messenger"].texts()[-1]
+    assert "⚠ check" not in fakes["messenger"].texts()[-1]
 
 
 def test_own_story_drafts_must_carry_his_numbers():

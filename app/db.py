@@ -231,6 +231,12 @@ class Database:
         res = await q.limit(limit).execute()
         return [Post(**r) for r in res.data or []]
 
+    async def recent_posts(self, since: datetime) -> list[Post]:
+        """Posts that went out or are scheduled, made since `since` (the no-repeat window)."""
+        q = self._c.table("posts").select(POST_COLUMNS).in_("status", ["posted", "queued", "posting"]).gte("created_at", _iso(since))
+        res = await q.order("created_at", desc=True).limit(30).execute()
+        return [Post(**r) for r in res.data or []]
+
     async def any_post_since(self, since: datetime) -> bool:
         res = await self._c.table("posts").select("id").gte("created_at", _iso(since)).limit(1).execute()
         return bool(res.data)

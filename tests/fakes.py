@@ -84,6 +84,7 @@ class FakeNvidia:
         self._converse_calls = 0  # lets chat_reply be a list: one entry per converse() round trip
         self.chat_calls_history: list[list[dict[str, str]]] = []
         self.tune_reply: str | None = None
+        self.final_text: str | None = None  # what the final editor (and the grounded rewrite) returns
         self.unsupported: list[str] = []
         self.final_prompts: list[str] = []
         self.comment_prompts: list[str] = []
@@ -134,6 +135,10 @@ class FakeNvidia:
         elif user.startswith("You are the final editor"):
             self.final_prompts.append(user)
             text = "47% of student startups die in year one. [raw] final post\nWhat would you do?"
+            if "Do NOT include any of these lines" in user:  # the grounded rewrite
+                text = "47% of student startups die in year one. [raw] rewritten post\nWhat would you do?"
+            if self.final_text is not None:
+                text = self.final_text
         elif user.startswith("You fact-check a LinkedIn post"):
             self.audit_prompts.append(user)
             text = json.dumps({"unsupported": self.unsupported})
@@ -367,6 +372,10 @@ class FakeDB:
         else:
             rows.sort(key=lambda r: r.get("created_at") or datetime.min.replace(tzinfo=UTC), reverse=True)
         return [Post(**r) for r in rows[:limit]]
+
+    async def recent_posts(self, since: datetime) -> list[Post]:
+        rows = [r for r in self.posts.values() if r["status"] in ("posted", "queued", "posting") and (r.get("created_at") or since) >= since]
+        return [Post(**r) for r in sorted(rows, key=lambda r: r.get("created_at") or since, reverse=True)[:30]]
 
     async def any_post_since(self, since: datetime) -> bool:
         return any(r.get("created_at") and r["created_at"] >= since for r in self.posts.values())

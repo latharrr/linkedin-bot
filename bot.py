@@ -42,11 +42,13 @@ from app.chat import (
 )
 from app.config import Settings, get_settings
 from app.db import ChatState, Post
+from app.grounding import has_verify_tags
 from app.jev import THRESHOLD as JEV_THRESHOLD
 from app.linkedin import escape_little_text, looks_like_post_url
 from app.linkread import find_urls
 from app.log import get_logger, setup_logging
 from app.pipeline import (
+    Ungrounded,
     audit_facts,
     audit_flags,
     copied_for,
@@ -127,6 +129,10 @@ PUBLISHER_STALE = timedelta(minutes=10)  # the dispatcher runs every 5 min when 
 CROWDED = timedelta(hours=24)
 TIME_HINT = "Best reach: Tue-Thu, 7:30-9 AM. Weekends and Friday afternoons are slow."
 STALE_AFTER = {"time", "unq", "asap", "drop"}  # after these, the tapped message's buttons are spent
+# Buttons that only ask ✅/✖ first (→ chat action name). Their message keeps its buttons
+# until the ✅, so a ✖ leaves everything as it was.
+CONFIRM_FIRST = {"drop": "discard", "unq": "unschedule", "asap": "asap"}
+BUTTON_OF = {"discard": "drop", "unschedule": "unq", "asap": "asap"}  # confirmed action → the callback that does it
 DEAD_ANSWERS = {"Expired", "Too late — already posting"}
 # Shown in Telegram's "/" menu (setMyCommands at startup).
 BOT_COMMANDS = [
@@ -156,11 +162,17 @@ ACTION_STATUSES: dict[str, tuple[str, ...]] = {
     "tune": ("awaiting_choice",),
     "new_image": ("awaiting_choice",),
     "show": ("awaiting_choice",),
+    "asap": ("queued",),  # ⚡ Post now: button only (confirmed), never a chat action
 }
 CONFIRMED = {"schedule", "reschedule", "unschedule", "discard"}
 # "post": "all" / "all_drafts" / "all_scheduled" — only these may hit several posts at once.
 BULK = {"discard", "unschedule"}
-ALL_SCOPES = {"all": None, "all_drafts": ("awaiting_choice",), "all_scheduled": ("queued",)}
+ALL_SCOPES = {"all", "all_drafts", "all_scheduled"}
+# Scheduled posts join a bulk discard only when HE says so ("scheduled", "queued",
+# "everything"); whatever scope the model sends, "all" alone means waiting drafts.
+SAYS_SCHEDULED = re.compile(r"(?<!un)\b(?:scheduled|queued)\b", re.IGNORECASE)
+SAYS_EVERYTHING = re.compile(r"\beverything\b", re.IGNORECASE)
+SAYS_DRAFTS = re.compile(r"\bdrafts?\b|\bwaiting\b", re.IGNORECASE)
 # The model sometimes asks "discard all three drafts?" as plain text instead of proposing an
 # action (live bug 2026-09-26). A yes/no question about one of these is turned into ✅/✖ buttons.
 CONFIRM_ASK = re.compile(r"\b(?:do\s+you\s+want|want\s+me\s+to|should\s+i|shall\s+i|are\s+you\s+sure|confirm|ok(?:ay)?\s+to|go\s+ahead)\b", re.IGNORECASE)
@@ -174,8 +186,32 @@ WHEN_IN_TEXT = re.compile(r"\b\d{1,2}(?::\d{2})?\s*[ap]\.?m\b|\b\d{1,2}:\d{2}\b"
 ALL_WORDS = re.compile(r"\b(?:all|every|everything|both|each)\b|\b(?:two|three|four|five|\d+)\s+(?:of\s+them|drafts?|posts?)\b", re.IGNORECASE)
 RELATIVE_TIMES = {"now": NOW_DELAY, "30m": timedelta(minutes=30)}
 MAX_CHOICES = 5
+# Clarify, don't guess (P0). Words that name no particular post: "discard that draft".
+VAGUE_WORDS = frozenset({
+    "that", "this", "those", "these", "the", "one", "ones", "its", "draft", "drafts", "post", "posts", "scheduled",
+    "queued", "waiting", "latest", "last", "first", "about", "please", "from", "with", "for", "and", "all", "our",
+})
+HEX_REF = re.compile(r"[0-9a-f][0-9a-f-]{3,}")  # a ref or a full post id
+# "schedule it" with no time (or one that can't be read): he taps a time; 9 AM first.
+HOUR_BUTTONS = [("🌅 9 AM", "0900"), ("☀️ 12 PM", "1200"), ("🕕 6 PM", "1800"), ("🌙 9 PM", "2100")]
+WHEN_ASK = "When should it go out? Tap a time, or type one (18:30, or 2026-09-29 08:00 for another day)."
+YES_TO_WHAT = "Yes to what? Nothing is waiting on a yes from me right now. Tell me what you'd like, or check where things stand:"
+CONFIRM_ASKED = "Confirm?"
+POST_NOW_BUTTON_ONLY = "Posting right now is button-only: tap ⚡ Now in the time picker, or ⚡ Post now under a scheduled post. It asks you first."
+ACK_ONLY = re.compile(r"^(?:ok(?:ay)?|k+|sure|cool|fine|alright)[\s.!👍]*$", re.IGNORECASE)  # an acknowledgement, not a yes
+# Something only he can supply ("add my referral code") that he hasn't given: ask for it,
+# never fold the request into the topic or let the writer invent it.
+NEEDS_INPUT = re.compile(
+    r"\bmy\s+(?:own\s+)?((?:referral|invite|promo|coupon|discount|affiliate)\s+(?:code|link)|(?:signup|sign-up|booking|calendly|portfolio|waitlist)\s+link)\b",
+    re.IGNORECASE,
+)
+HAS_VALUE = re.compile(r"https?://\S+|\b(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9-]{4,}\b|[:=]\s*\S{3,}")
+# The grounding gate asked him for the real detail (app/pipeline.Ungrounded). His answer
+# rides along with the brief as the only personal material the writer may use.
+STAKE_NOTE = "\n\nHis own experience with this, in his words (the only personal material to use, nothing beyond it): {answer}"
+INPUT_NOTE = "\n\nHis {thing}, to use exactly as given (never change or invent it): {answer}"
+NO_STORY_NOTE = "\n\n(No personal story for this one: write it as his informed take, with no anecdote, metric or claim about his own history.)"
 REF_TAG = re.compile(r"[ \t]*[\[(]?\bref[:\s]+[0-9a-f]{6,}[\])]?", re.IGNORECASE)
-WHEN_HINT = "When should it go out? e.g. 6pm, 18:30, or 2026-09-29 08:00 (IST)."
 TUNE_LABELS = {"short": "✂️ Shortening", "hook": "🎣 Rewriting the hook of", "bold": "🔥 Sharpening"}
 ASK_TOPIC = "What should the post be about? Send a topic or a link — or say \"you pick\" and I'll draft from today's news."
 CHAT_DOWN = "I couldn't reach the chat model just now. To start drafts anyway, say: make a post about <topic>."
@@ -240,9 +276,58 @@ class PendingAction:
     statuses: tuple[str, ...] | None = None  # bulk: the states he confirmed ("all drafts" stays drafts)
 
 
+@dataclass
+class Ask:
+    """The bot asked him for something only he knows; his next message answers it."""
+
+    nonce: str
+    brief: str
+    note: str  # STAKE_NOTE or INPUT_NOTE, filled with his answer
+    thing: str = ""
+    offer_no_story: bool = True
+
+
+@dataclass
+class NoMatch:
+    """He named a post by topic and nothing waiting matches it."""
+
+    about: str
+
+
+def about_words(text: str) -> list[str]:
+    """The words in "the eval costs draft" that could name a post (eval, costs)."""
+    return [w for w in re.findall(r"[a-z0-9][a-z0-9'-]{2,}", text.lower()) if w not in VAGUE_WORDS]
+
+
+def topic_hits(posts: list[Post], about: str) -> list[Post]:
+    """Posts whose topic, brief or opening line mentions the most of his words."""
+    wanted = about_words(about)
+    scored = []
+    for p in posts:
+        hay = re.findall(r"[a-z0-9]+", f"{p.topic or ''} {p.brief} {p.draft(p.chosen or 'a')[:200]}".lower())
+        score = sum(any(h.startswith(w[:5]) for h in hay) for w in wanted)
+        if score:
+            scored.append((score, p))
+    best = max((sc for sc, _ in scored), default=0)
+    return [p for sc, p in scored if sc == best]
+
+
 def post_ref(post: Post) -> str:
     """Short id the chat model can hand back in an action (a uuid prefix)."""
     return post.id[:8]
+
+
+def bulk_statuses(name: str, said: str) -> tuple[str, ...]:
+    """Which posts a bulk discard/unschedule may touch, from HIS words only (never the
+    model's scope): drafts by default; scheduled posts only if he says "scheduled",
+    "queued" or "everything"."""
+    if name == "unschedule":
+        return ("queued",)
+    if SAYS_EVERYTHING.search(said):
+        return ("awaiting_choice", "queued")
+    if SAYS_SCHEDULED.search(said):
+        return ("awaiting_choice", "queued") if SAYS_DRAFTS.search(said) else ("queued",)
+    return ("awaiting_choice",)
 
 
 def implied_action(reply: str, user_text: str) -> dict[str, Any] | None:
@@ -279,6 +364,8 @@ class BotHandler:
         self.active_runs: dict[int, ActiveRun] = {}  # chat → the draft generating right now, if any
         self.pending: dict[int, PendingAction] = {}  # chat → the chat action awaiting ✅ / ✖
         self.choosing: dict[int, tuple[str, dict[str, Any], list[str]]] = {}  # chat → (nonce, action, post ids) awaiting a pick
+        self.asks: dict[int, Ask] = {}  # chat → a detail only he can give (the grounding gate, a referral code…)
+        self.offers: dict[int, tuple[str, str]] = {}  # chat → (nonce, topic) behind a "✍️ New draft on it" button
 
     def spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         task = asyncio.create_task(coro)
@@ -335,6 +422,21 @@ class BotHandler:
                 await self.answer_pending(chat_id, is_yes(text))
                 return
             pending.typed_ok = False  # he moved on: a later "yes" is about something else
+        ask = self.asks.get(chat_id)
+        if ask is not None and not text.startswith("/"):
+            if is_no(text) or is_decline(text):
+                del self.asks[chat_id]
+                return await self.tell(chat_id, "Okay — dropped it. Nothing was saved.")
+            if not text.rstrip().endswith("?") and not is_yes(text):  # a question means he moved on; the ask waits
+                del self.asks[chat_id]
+                self.memory.add(chat_id, "user", text)
+                return await self.start_generation(chat_id, ask.brief + ask.note.format(answer=text[:600], thing=ask.thing), long_ok=True)
+        if ((is_yes(text) and not ACK_ONLY.match(text)) or is_no(text)) and not self.asked_a_question(chat_id):
+            self.memory.add(chat_id, "user", text)
+            if is_no(text):
+                return await self.tell(chat_id, "Okay — nothing changed.")
+            self.memory.add(chat_id, "assistant", YES_TO_WHAT)
+            return await self.say(chat_id, YES_TO_WHAT, [[("📋 Status", "menu:/status"), ("📝 Drafts", "menu:/drafts"), ("📅 Queue", "menu:/queue")]])
         if text == "/stats":
             return await self.stats_flow(chat_id)
         request = parse_draft_request(text)
@@ -602,9 +704,22 @@ class BotHandler:
         return "\n\n".join(cards_text(await self._collect_usage()))
 
     # conversation ------------------------------------------------------------------
+    async def asked_for_input(self, chat_id: int, topic: str, said: str) -> bool:
+        """"…and add my referral code" without the code: ask for it (his answer rides along
+        with the brief) instead of letting the writer leave a blank or invent one."""
+        needs = NEEDS_INPUT.search(f"{topic} {said}")
+        if needs is None or HAS_VALUE.search(said):
+            return False
+        thing = needs.group(1).lower()
+        self.asks[chat_id] = Ask(secrets.token_hex(4), topic, INPUT_NOTE, thing, offer_no_story=False)
+        await self.tell(chat_id, f"What's your {thing}? Send it exactly as it should appear — I won't make one up.")
+        return True
+
     async def on_draft_request(self, chat_id: int, text: str, request: DraftRequest) -> None:
         if request.topic:
             self.memory.add(chat_id, "user", text)
+            if await self.asked_for_input(chat_id, request.topic, text):
+                return None
             return await self.start_generation(chat_id, request.topic, echo=request.topic != text)
         if self.memory.has_context(chat_id):  # "draft that": the chat model resolves "that"
             return await self.chat_flow(chat_id, text)
@@ -661,12 +776,12 @@ class BotHandler:
             log.warning("chat_failed", extra={"error": f"{type(exc).__name__}: {exc}"[:200]})
             return await self.say(chat_id, CHAT_DOWN)
         if out.get("action"):
-            return await self.chat_action(chat_id, out["action"])
+            return await self.chat_action(chat_id, {**out["action"], "said": text})
         reply, topic = REF_TAG.sub("", out["reply"]), out["draft_topic"]  # refs are internal, never shown
         implied = None if topic else implied_action(reply, text)
         if implied is not None:  # never confirm a change in plain text: ask with ✅/✖ instead
             log.info("chat_confirm_to_buttons", extra={"action": implied["name"]})
-            return await self.chat_action(chat_id, implied)
+            return await self.chat_action(chat_id, {**implied, "said": text})
         if topic and self.svc.jev is not None:
             p = await self.svc.jev.wants_drafts(self.memory.history(chat_id))
             log.info("jev_gate", extra={"p": p})
@@ -674,6 +789,8 @@ class BotHandler:
                 offer = f"Want me to draft a post on: {topic}\nSay \"draft that\" and I'll start."
                 self.memory.add(chat_id, "assistant", offer)
                 return await self.say(chat_id, offer)
+        if topic and await self.asked_for_input(chat_id, topic, text):
+            return None
         if topic and len(topic) >= MIN_TOPIC_CHARS:
             self.memory.add(chat_id, "assistant", f"(started drafts on: {topic})")
             if reply:
@@ -688,15 +805,17 @@ class BotHandler:
         never the model, so chat can't claim something happened that didn't."""
         name = str(action.get("name") or "")
         log.info("chat_action", extra={"action": name})
-        statuses = ACTION_STATUSES.get(name)
+        statuses = ACTION_STATUSES.get(name) if name != "asap" else None
         if statuses is None:
             return await self.tell(chat_id, "I can't do that from chat. Use the buttons under the post, or /help.")
         scope = str(action.get("post") or "").strip().lower()
         if scope in ALL_SCOPES and name in BULK:
-            return await self.confirm_bulk(chat_id, name, ALL_SCOPES[scope] or statuses)
-        post = await self.resolve_post(chat_id, action.get("post"), statuses)
+            return await self.confirm_bulk(chat_id, name, bulk_statuses(name, str(action.get("said") or "")))
+        post = await self.resolve_post(chat_id, action.get("post"), statuses, str(action.get("about") or ""))
         if isinstance(post, str):
             return await self.tell(chat_id, post)
+        if isinstance(post, NoMatch):
+            return await self.no_match(chat_id, post.about, statuses)
         if isinstance(post, list):
             return await self.ask_which(chat_id, action, post)
         draft = str(action.get("draft") or "").lower() or None
@@ -709,9 +828,11 @@ class BotHandler:
         pending = PendingAction(secrets.token_hex(4), name, [post.id], draft=draft)
         if name in ("schedule", "reschedule"):
             pending.when_spec = str(action.get("when") or "").strip().lower()
+            if pending.when_spec in ("now", "asap", "immediately"):  # ⚡ is button-only, and the button asks first
+                return await self.tell(chat_id, POST_NOW_BUTTON_ONLY)
             pending.when = self.resolve_when(pending.when_spec)
-            if pending.when is None:
-                return await self.tell(chat_id, WHEN_HINT)
+            if pending.when is None:  # no time, or one that can't be read: he taps one
+                return await self.ask_when(chat_id, {**action, "post": post.id, "draft": draft})
         about = (post.draft(post.chosen or draft or "a").strip().splitlines() or [""])[0][:90] or (post.topic or post.brief)[:90]
         question = {
             "schedule": f"Schedule this for {format_ist(pending.when)}?" if pending.when else "",
@@ -745,6 +866,63 @@ class BotHandler:
         self.memory.add(chat_id, "assistant", f"(asked to confirm with buttons: {question})")
         await self.say(chat_id, f"{question}\n\n{detail}", keyboard)
 
+    async def confirm_button(self, chat_id: int, cb: Callback, post: Post) -> str:
+        """🗑 Discard / ↩️ Unschedule under a post: the same ✅/✖ question chat actions get.
+        (Live bug 2026-09-26: a stray 🗑 tap discarded a scheduled post 30 s after ✅.)"""
+        name = CONFIRM_FIRST[cb.action]
+        about = (post.draft(post.chosen or "a").strip().splitlines() or [""])[0][:90] or (post.topic or post.brief)[:90]
+        when = f" (scheduled {format_ist(post.scheduled_at)})" if post.status == "queued" and post.scheduled_at else ""
+        question = {
+            "discard": f"Discard this{when}? It will never post.",
+            "unschedule": f"Unschedule this{when}? It goes back to waiting for a time.",
+            "asap": f"Post this now{when.replace('(scheduled', '(instead of')}? It goes live on LinkedIn within the next few minutes.",
+        }[name]
+        await self.ask_confirm(chat_id, PendingAction(secrets.token_hex(4), name, [post.id]), question, f"“{about}”")
+        return CONFIRM_ASKED
+
+    def asked_a_question(self, chat_id: int) -> bool:
+        """Did the last thing said to him ask something a bare "yes" could answer?"""
+        said = [m["content"] for m in self.memory.history(chat_id) if m["role"] == "assistant"]
+        return bool(said) and ("?" in said[-1] or said[-1].startswith("Want me to draft"))
+
+    async def ask_for_detail(self, chat_id: int, brief: str, problems: Any) -> None:
+        """The grounding gate blocked the draft: ask him for the real detail instead of
+        delivering an invented one. Nothing was saved."""
+        base = brief.split(STAKE_NOTE.split("{", 1)[0], 1)[0].removesuffix(NO_STORY_NOTE)
+        blank = any(why == "a blank only you can fill" for why in problems.values())
+        offer = not brief.endswith(NO_STORY_NOTE) and not blank
+        ask = Ask(secrets.token_hex(4), base, STAKE_NOTE, offer_no_story=offer)
+        self.asks[chat_id] = ask
+        question = (
+            "Reply with the missing detail and I'll put it in exactly as you send it."
+            if blank else
+            "What's your real connection to this? Reply with a line or two (something you did, saw or paid for) "
+            "and I'll build the post on exactly that."
+        )
+        text = f"✋ I held this draft back instead of guessing. It kept saying things I can't back up:\n{problems.text()}\n\n{question}"
+        keyboard = ([[("✍️ Write it without a personal story", f"ask:none:{ask.nonce}")]] if offer else []) + [[("✖ Drop it", f"ask:drop:{ask.nonce}")]]
+        self.memory.add(chat_id, "assistant", f"(asked him for his real experience with: {base[:120]}?)")
+        await self.say(chat_id, text, keyboard)
+
+    async def on_ask_button(self, chat_id: int, data: str) -> str:
+        _, choice, nonce = (data.split(":") + ["", ""])[:3]
+        ask = self.asks.get(chat_id)
+        if ask is None or ask.nonce != nonce:
+            return "Expired"
+        del self.asks[chat_id]
+        if choice == "none" and ask.offer_no_story:
+            await self.start_generation(chat_id, ask.brief + NO_STORY_NOTE, long_ok=True)
+            return "On it"
+        await self.tell(chat_id, "Okay — dropped it. Nothing was saved.")
+        return "Dropped"
+
+    async def on_offer_button(self, chat_id: int, data: str) -> str:
+        offer = self.offers.pop(chat_id, None)
+        if offer is None or offer[0] != data.split(":", 1)[1]:
+            return "Expired"
+        await self.start_generation(chat_id, offer[1], echo=True)
+        return "Drafting"
+
     async def tell(self, chat_id: int, text: str) -> None:
         self.memory.add(chat_id, "assistant", text)
         await self.say(chat_id, text)
@@ -755,21 +933,46 @@ class BotHandler:
             return now + RELATIVE_TIMES[spec]
         return parse_when(spec or "", now)
 
-    async def resolve_post(self, chat_id: int, ref: Any, statuses: tuple[str, ...]) -> Post | list[Post] | str:
-        """The post an action means: by ref (uuid prefix from a lookup), or the only one in
-        a matching state. Otherwise the real candidates to pick from (a ref the model made
-        up matches nothing, so he picks from what actually exists), never a guess."""
+    async def resolve_post(self, chat_id: int, ref: Any, statuses: tuple[str, ...], about: str = "") -> Post | list[Post] | NoMatch | str:
+        """The post an action means: by ref (uuid prefix from a lookup), by the words he
+        named it with, or the only one in a matching state. Otherwise the real candidates
+        to pick from, or NoMatch when his words fit none: never a guess, never a made-up ref."""
         candidates = [p for status in statuses for p in await self.db.posts_with_status(chat_id, status, 10)]  # type: ignore[arg-type]
         ref = str(ref or "").strip().lstrip("#").lower().removeprefix("ref").strip()
+        if ref and not HEX_REF.fullmatch(ref):  # the model passed his words, not a ref
+            about, ref = about or ref, ""
         matches = [p for p in candidates if p.id.startswith(ref)] if len(ref) >= 4 else []
         if len(matches) == 1:
             return matches[0]
-        if len(candidates) == 1 and not ref:
-            return candidates[0]
         if not candidates:
             what = "scheduled post" if statuses == ("queued",) else "draft" if statuses == ("awaiting_choice",) else "post"
             return f"There's no {what} for that right now."
+        if not matches and about_words(about):
+            hits = topic_hits(candidates, about)
+            if len(hits) == 1:
+                return hits[0]
+            return hits[:MAX_CHOICES] if hits else NoMatch(about)
+        if len(candidates) == 1 and not ref:
+            return candidates[0]
         return (matches or candidates)[:MAX_CHOICES]
+
+    async def no_match(self, chat_id: int, about: str, statuses: tuple[str, ...]) -> None:
+        """His words fit no post: say so, offer what's there or a fresh draft on it."""
+        nonce = secrets.token_hex(4)
+        self.offers[chat_id] = (nonce, about)
+        what = "scheduled post" if statuses == ("queued",) else "draft" if statuses == ("awaiting_choice",) else "draft or scheduled post"
+        look = ("📅 What's scheduled", "menu:/queue") if statuses == ("queued",) else ("📝 What's waiting", "menu:/drafts")
+        keyboard = [[look], [("✍️ New draft on it", f"new:{nonce}")]]
+        await self.tell(chat_id, f"I don't see a {what} about “{about[:80]}”.")
+        await self.say(chat_id, "Want to see what's there, or start a new draft on it?", keyboard)
+
+    async def ask_when(self, chat_id: int, action: dict[str, Any]) -> None:
+        """A schedule with no usable time: hour buttons (9 AM first); the tap carries on
+        to the usual ✅/✖ question naming the post and the time."""
+        nonce = secrets.token_hex(4)
+        self.choosing[chat_id] = (nonce, action, [str(action["post"])])
+        self.memory.add(chat_id, "assistant", WHEN_ASK)
+        await self.say(chat_id, WHEN_ASK, [[(label, f"act:when:{nonce}:{hhmm}") for label, hhmm in HOUR_BUTTONS]])
 
     async def ask_which(self, chat_id: int, action: dict[str, Any], posts: list[Post]) -> None:
         """One button per real post; the tap carries on with the same action. Discard and
@@ -781,10 +984,14 @@ class BotHandler:
             when = f"{format_ist(p.scheduled_at)} — " if p.scheduled_at else ""
             lines.append(f"{i}. {when}{(p.topic or p.brief)[:90]}")
             keyboard.append([(f"{i}. {short_label(p.topic or p.brief)}", f"act:pick:{nonce}:{i}")])
-        if action.get("name") in BULK and len(posts) > 1:
-            label = "🗑 All of them" if action.get("name") == "discard" else "↩️ All of them"
+        allowed = bulk_statuses(str(action.get("name")), str(action.get("said") or ""))
+        if action.get("name") in BULK and sum(p.status in allowed for p in posts) > 1:
+            n = sum(p.status in allowed for p in posts)
+            what = "drafts" if allowed == ("awaiting_choice",) else "scheduled" if allowed == ("queued",) else "of them"
+            label = f"🗑 All {n} {what}" if action.get("name") == "discard" else f"↩️ All {n} {what}"
             keyboard.append([(label, f"act:pick:{nonce}:all")])
-        text = "Which one?\n\n" + "\n".join(lines)
+        verb = {"discard": "discard", "unschedule": "unschedule", "schedule": "schedule", "reschedule": "move"}.get(str(action.get("name")))
+        text = (f"Which one should I {verb}?" if verb else "Which one?") + "\n\n" + "\n".join(lines)
         self.memory.add(chat_id, "assistant", text)
         await self.say(chat_id, text, keyboard)
 
@@ -804,6 +1011,13 @@ class BotHandler:
 
     async def on_action_button(self, chat_id: int, data: str) -> str:
         _, choice, nonce, index = (data.split(":") + ["", "", ""])[:4]
+        if choice == "when":
+            waiting = self.choosing.get(chat_id)
+            if waiting is None or waiting[0] != nonce or not re.fullmatch(r"\d{4}", index):
+                return "Expired"
+            del self.choosing[chat_id]
+            await self.chat_action(chat_id, {**waiting[1], "when": f"{index[:2]}:{index[2:]}"})
+            return "Picked"
         if choice == "pick":
             waiting = self.choosing.get(chat_id)
             if waiting is None or waiting[0] != nonce:
@@ -811,7 +1025,8 @@ class BotHandler:
             _, action, ids = waiting
             if index == "all" and action.get("name") in BULK:
                 del self.choosing[chat_id]
-                posts = [p for p in [await self.db.get_post(i) for i in ids] if p is not None and p.status in ACTION_STATUSES[action["name"]]]
+                allowed = bulk_statuses(action["name"], str(action.get("said") or ""))
+                posts = [p for p in [await self.db.get_post(i) for i in ids] if p is not None and p.status in allowed]
                 if not posts:
                     await self.tell(chat_id, "Those posts already moved on — nothing changed.")
                     return "Expired"
@@ -864,8 +1079,8 @@ class BotHandler:
             await self.say(chat_id, queued_text(post.chosen, when, not post.draft_b) + " (moved)", queued_keyboard(post.id))  # type: ignore[arg-type]
             await self.warn_if_crowded(chat_id, post.id, when)  # type: ignore[arg-type]
             return "Moved"
-        cb = Callback("unq" if pending.name == "unschedule" else "drop", None, post.id)
-        return await self.route_callback(chat_id, cb, post) or "Done"
+        cb = Callback(BUTTON_OF[pending.name], None, post.id)
+        return await self.route_callback(chat_id, cb, post, confirmed=True) or "Done"
 
     async def apply_bulk(self, chat_id: int, pending: PendingAction) -> str:
         """Bulk discard / unschedule: each post is re-checked and changed on its own; one
@@ -916,12 +1131,13 @@ class BotHandler:
             return None
 
     # generation --------------------------------------------------------------------
-    async def start_generation(self, chat_id: int, brief: str, echo: bool = False) -> None:
+    async def start_generation(self, chat_id: int, brief: str, echo: bool = False, long_ok: bool = False) -> None:
         """echo: say what the drafts will be about when the brief was worded by the bot
-        (extracted from "make a post about …", written by the chat model, or from the news)."""
+        (extracted from "make a post about …", written by the chat model, or from the news).
+        long_ok: the brief carries his answer to a question the bot asked (Ask)."""
         if len(brief) < MIN_TOPIC_CHARS:
             return await self.say(chat_id, "What should the post be about? Send a topic or a link.")
-        if len(brief) > MAX_BRIEF_CHARS:
+        if len(brief) > MAX_BRIEF_CHARS and not long_ok:
             return await self.say(
                 chat_id,
                 f"That's over {MAX_BRIEF_CHARS} characters — it looks like a full post, not a brief. "
@@ -940,6 +1156,9 @@ class BotHandler:
     async def _generate(self, chat_id: int, brief: str, run: ActiveRun) -> None:
         try:
             await run_brief(self.svc, chat_id, brief, on_stage=lambda s: setattr(run, "stage", s))
+        except Ungrounded as exc:
+            log.warning("generation_ungrounded", extra={"problems": len(exc.problems)})
+            await self.ask_for_detail(chat_id, brief, exc.problems)
         except Exception as exc:
             log.exception("generation_failed")
             await self.say(chat_id, f"Generation failed: {type(exc).__name__}: {str(exc)[:300]}")
@@ -969,6 +1188,8 @@ class BotHandler:
         try:
             if await regenerate(self.svc, post) is None:
                 await self.say(post.chat_id, "Draft already locked — regenerated drafts discarded.")
+        except Ungrounded:
+            await self.say(post.chat_id, "The new version kept saying things about you I can't back up — kept the current draft. Tap ✏️ Edit to add your real detail.")
         except Exception as exc:
             log.exception("regen_failed", extra={"post_id": post.id})
             await self.say(post.chat_id, f"Regenerate failed: {type(exc).__name__}: {str(exc)[:300]}")
@@ -985,6 +1206,14 @@ class BotHandler:
                 return
             if data in ("iv:skip", "iv:never", "iv:done"):
                 answer = await self.interview_button(chat_id, data[3:])
+                return
+            if data and data.startswith("ask:"):
+                answer = await self.on_ask_button(chat_id, data)
+                if message_id is not None:
+                    await self._clear_buttons(chat_id, message_id)
+                return
+            if data and data.startswith("new:"):
+                answer = await self.on_offer_button(chat_id, data)
                 return
             if data and data.startswith("act:"):
                 answer = await self.on_action_button(chat_id, data)
@@ -1009,7 +1238,7 @@ class BotHandler:
                 answer = "Working on it — wait for the update"
                 return
             answer = await self.route_callback(chat_id, cb, post)
-            if message_id is not None and cb.action in STALE_AFTER and answer not in DEAD_ANSWERS:
+            if message_id is not None and cb.action in STALE_AFTER and answer not in DEAD_ANSWERS and answer != CONFIRM_ASKED:
                 await self._clear_buttons(chat_id, message_id)  # these buttons did their job
         finally:
             await self.msg.answer_callback(callback_id, answer)  # always, so the button stops spinning
@@ -1026,8 +1255,12 @@ class BotHandler:
         except Exception:  # already edited, too old, or deleted: nothing to clear
             log.info("clear_buttons_skipped")
 
-    async def route_callback(self, chat_id: int, cb: Callback, post: Post) -> str | None:
+    async def route_callback(self, chat_id: int, cb: Callback, post: Post, confirmed: bool = False) -> str | None:
+        """confirmed: the ✅ on a discard/unschedule question was tapped (answer_pending).
+        Without it, 🗑 and ↩️ only ask: nothing destructive fires on a single tap."""
         now = self.now()
+        if cb.action in CONFIRM_FIRST and not confirmed:
+            return await self.confirm_button(chat_id, cb, post)
         if cb.action == "pick":
             if not post.draft(cb.arg or "").strip():  # a one-post row has no draft B to approve
                 return "Expired"
@@ -1037,6 +1270,11 @@ class BotHandler:
             await self.say(chat_id, f"{picked} When should it go out?\n{TIME_HINT}", time_keyboard(post.id))
             return f"Draft {cb.arg.upper()}"
         if cb.action == "time":
+            if cb.arg == "now" and not confirmed:  # ⚡ Now in the time picker asks first, like ⚡ Post now
+                about = (post.draft(post.chosen or "a").strip().splitlines() or [""])[0][:90]
+                pending = PendingAction(secrets.token_hex(4), "schedule", [post.id], when_spec="now", when=now + NOW_DELAY, draft=post.chosen)
+                await self.ask_confirm(chat_id, pending, "Post this now? It goes live on LinkedIn within the next few minutes.", f"“{about}”")
+                return CONFIRM_ASKED
             if cb.arg == "custom":
                 await self.db.set_chat_state(chat_id, "awaiting_custom_time", post.id, now)
                 await self.say(chat_id, "Send time as HH:MM (IST)")
@@ -1101,6 +1339,11 @@ class BotHandler:
         return "Expired"
 
     async def queue(self, chat_id: int, post_id: str, when: datetime) -> str:
+        post = await self.db.get_post(post_id)
+        if post is not None and has_verify_tags(post.draft(post.chosen or "a")):  # unverified numbers never go out as fact
+            await self.say(chat_id, "This draft still has [verify] tags on numbers I couldn't confirm. Check each one, then "
+                                    "✏️ Edit it with the tag removed (or the line cut), and pick a time again.")
+            return "Check [verify] first"
         updated = await self.db.update_post(
             post_id, {"scheduled_at": when, "status": "queued"}, status="awaiting_choice", require_chosen=True
         )
@@ -1142,7 +1385,10 @@ class BotHandler:
             facts = audit_facts(research)
             sources = research_corpus({"results": research.get("results") or []})
             flags = (await audit_flags(self.svc.writer, edited, post.brief, facts, sources))[:3]
-            research = {**research, "claim_flags": {**(research.get("claim_flags") or {}), which: flags}}
+            if flags:  # the grounding gate: an edit never delivers a claim about him nothing backs
+                log.warning("tune_ungrounded", extra={"post_id": post.id, "flags": [f[:80] for f in flags]})
+                return await self.say(post.chat_id, f"That edit said something about you I can't back up (“{flags[0][:120]}”) — kept the original. Try again or ✏️ Edit.")
+            research = {**research, "claim_flags": {**(research.get("claim_flags") or {}), which: []}}
             fields = {f"draft_{which}": edited, f"edited_{which}": False, "chosen": None, "research": research}
             updated = await self.db.update_post(post.id, fields, status="awaiting_choice")
             if updated is None:

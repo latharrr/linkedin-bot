@@ -18,6 +18,16 @@ from typing import Any
 
 from app import storybank
 from app.db import Post
+from app.grounding import (
+    REPEAT_WINDOW,
+    Problems,
+    claims_about_him,
+    lifted_lines,
+    mark_unverified,
+    placeholder_lines,
+    repeated_claims,
+    unverified_about_him,
+)
 from app.images import hook_of
 from app.linkread import brief_with_titles
 from app.log import get_logger
@@ -115,6 +125,24 @@ def with_bank(voice: dict[str, Any], bank: dict[str, Any]) -> dict[str, Any]:
     """His interview answers ride along with the voice, for the writer to draw on."""
     text = storybank.as_text(bank)
     return {**voice, "story_bank": text} if text else voice
+
+
+async def recent_claims(svc: Services, facts: list[str], skip: str | None = None) -> list[str]:
+    """What his posts from the last REPEAT_WINDOW (posted or scheduled) already said about
+    him: the claims logged on each row, or read off an older row's text."""
+    rows = await optional(lambda: svc.db.recent_posts(utcnow() - REPEAT_WINDOW), [], "recent_posts")
+    names = his_names(facts)
+    out: list[str] = []
+    for p in rows:
+        if p.id != skip:
+            logged = (p.research or {}).get("claims_used")
+            out += [str(c) for c in logged] if isinstance(logged, list) else claims_about_him(p.draft(p.chosen or "a"), names)
+    return out
+
+
+def with_recent(voice: dict[str, Any], recent: list[str]) -> dict[str, Any]:
+    """The writer sees what's off limits up front; the gate catches what slips through."""
+    return {**voice, "used_in_last_14_days_do_not_reuse": recent[:20]} if recent else voice
 
 
 def audit_facts(research: dict[str, Any] | None) -> list[str]:
@@ -245,9 +273,11 @@ async def write_drafts(
     research: dict[str, Any],
     voice: dict[str, Any],
     few_shot: list[str],
+    recent: list[str] | None = None,
 ) -> dict[str, str]:
     """Steps 6–7: two candidates (story + contrarian) → ONE final post → de-AI →
-    number repair → polish (claim audit) → mobile shape → final audit.
+    number repair → polish (claim audit) → mobile shape → grounding gate.
+    recent: claims about him from the last 14 days' posts (the no-repeat rule).
     Returns {"a": the post, "b": ""}: one post per run, stored in draft_a."""
     facts = format_research(research)
     cand_a, cand_b = await asyncio.gather(
@@ -269,12 +299,53 @@ async def write_drafts(
         polished = await rewrite_without(svc, brief, outline, facts, voice, cand_a, cand_b, seen, corpus, facts_about_him, sources) or polished
     post = polished
     post = await fit_shape(svc.writer, post, corpus, [str(h) for h in outline.get("hooks") or []])
-    # What the audit still flags is shown under the post ("⚠ check: …"), so his approval
-    # is also the review. Stored on the row with the research.
-    flagged = await audit_flags(svc.writer, post, brief, facts_about_him, sources)
-    flagged += [line for line, _new in invented_lines(post, brief, facts_about_him, sources) if line not in flagged]
-    research["claim_flags"] = {"a": flagged[:3], "b": []}
+    # The grounding gate: anything about him that isn't traceable, copied from his profile
+    # card, reused from a recent post or left as a blank never ships. One grounded rewrite,
+    # told exactly what to leave out; if that still has problems, he's asked (Ungrounded).
+    check = GateCheck(svc, brief, facts_about_him, sources, corpus, [str(voice.get("profile") or ""), *facts_about_him], recent or [])
+    problems = await check(post)
+    if problems:
+        log.warning("gate_blocked", extra={"problems": [f"{why}: {line[:80]}" for line, why in problems.items()]})
+        retry = await rewrite_without(svc, brief, outline, facts, voice, cand_a, cand_b, [f"{line} ({why})" for line, why in problems.items()], corpus, facts_about_him, sources)
+        still = await check(retry) if retry else problems
+        if still:
+            raise Ungrounded(still)
+        post = retry  # type: ignore[assignment]
+    post = mark_unverified(post, corpus, his_names(facts_about_him))  # third-party numbers nobody backs: [verify]
+    research["claim_flags"] = {"a": [], "b": []}  # nothing ungrounded reaches him
+    research["claims_used"] = claims_about_him(post, his_names(facts_about_him))  # the no-repeat log
     return {"a": post, "b": ""}
+
+
+class Ungrounded(PipelineError):
+    """The draft would say things about him nothing backs (or reuse a recent story) even
+    after a grounded rewrite. Nothing was saved; the bot asks him for the real detail."""
+
+    def __init__(self, problems: Problems) -> None:
+        super().__init__(f"{len(problems)} ungrounded line(s)")
+        self.problems = problems
+
+
+@dataclass
+class GateCheck:
+    svc: Services
+    brief: str
+    facts: list[str]
+    sources: str
+    corpus: str
+    profile: list[str]
+    recent: list[str]
+
+    async def __call__(self, post: str) -> Problems:
+        names = his_names(self.facts)
+        problems = Problems()  # most specific reason first: a line keeps the first one it gets
+        problems.add(placeholder_lines(post), "a blank only you can fill")
+        problems.add(repeated_claims(post, self.recent, names), "already used in a post from the last 14 days")
+        problems.add(lifted_lines(post, self.profile), "copied from your profile")
+        problems.add(unverified_about_him(post, self.corpus, names), "a number about you nothing backs")
+        problems.add(await audit_flags(self.svc.writer, post, self.brief, self.facts, self.sources), "not backed by your brief or profile")
+        problems.add([line for line, _new in invented_lines(post, self.brief, self.facts, self.sources)], "details nothing backs")
+        return problems
 
 
 COHERENT_SHARE = 0.7  # polish may remove up to 30% of a post before it's rewritten whole
@@ -285,8 +356,11 @@ async def rewrite_without(
     cand_a: str, cand_b: str, claims: list[str], corpus: str, facts_about_him: list[str], sources: str = "",
 ) -> str | None:
     note = (
-        "Write a complete, coherent post. Do NOT include any of these claims: they aren't supported by "
-        "his brief, his background facts or the research:\n" + "\n".join(f"- {c}" for c in dict.fromkeys(claims))
+        "Write a complete, coherent post. Do NOT include any of these lines or what they claim (the reason is in "
+        "brackets where given). A claim about him must come from his brief or background facts; a story or metric "
+        "used in a recent post must not come back; his profile is context, never text to paste. If that leaves no "
+        "real personal stake for this idea, drop the personal opening instead of inventing one:\n"
+        + "\n".join(f"- {c}" for c in dict.fromkeys(claims))
     )
     try:
         post = await svc.writer.final(brief, outline, facts, voice, cand_a, cand_b, note=note)
@@ -503,7 +577,8 @@ async def generate(svc: Services, brief: str, on_stage: Any = None) -> Generated
     few_shot = [p.text for p in few_shot_rows]
     bank = await load_bank(svc)
     background = [str(f) for f in voice.get("background") or []] + storybank.facts(bank)
-    pen = with_bank(writing_voice(voice, stored_brief), bank)
+    recent = await recent_claims(svc, facts=background)
+    pen = with_recent(with_bank(writing_voice(voice, stored_brief), bank), recent)
     rules = [f"CLAIM RULE: {r}" for r in voice.get("claim_rules") or []]
     stage("outlining")
     outline = await grounded_outline(  # step 5 (+ audit: the angle must match his own account)
@@ -513,7 +588,7 @@ async def generate(svc: Services, brief: str, on_stage: Any = None) -> Generated
     # later preview/regen) treats "15+ tools in 8 weeks" as verified, not invented.
     research = {**research, "outline": outline, "background": background, "claim_rules": [str(r) for r in voice.get("claim_rules") or []]}
     stage("writing")
-    drafts = await write_drafts(svc, brief, outline, research, pen, few_shot)  # 6–7
+    drafts = await write_drafts(svc, brief, outline, research, pen, few_shot, recent)  # 6–7
     stage("making the image")
     images = await make_images(svc, drafts, outline)  # 9
     log.info("generated", extra={"template": outline["sub_template"], "similar": bool(similar)})
@@ -616,7 +691,9 @@ async def regenerate(svc: Services, post: Post) -> Post | None:
     embedding = await svc.db.get_topic_embedding(post.id) or await svc.embedder.embed_query(post.brief)
     few_shot = [p.text for p in await optional(lambda: svc.db.match_past_posts(embedding, 3), [], "few_shot")]
     bank = await load_bank(svc)
-    drafts = await write_drafts(svc, post.brief, outline, research, with_bank(writing_voice(voice, post.brief), bank), few_shot)
+    recent = await recent_claims(svc, facts=audit_facts(research), skip=post.id)
+    pen = with_recent(with_bank(writing_voice(voice, post.brief), bank), recent)
+    drafts = await write_drafts(svc, post.brief, outline, research, pen, few_shot, recent)
     urls = await upload_images(svc, post.id, await make_images(svc, drafts, outline))
     updated = await svc.db.update_post(
         post.id,

@@ -63,7 +63,8 @@ MAX_AHEAD = timedelta(days=60)
 def parse_when(text: str, now: datetime) -> datetime | None:
     """A posting time the chat model wrote, in IST: '18:30', '6pm', '8:15 am', or with a
     date, '2026-09-29 08:00' / '2026-09-29 8am'. Without a date it's the next such time;
-    with one it must be in the future and within MAX_AHEAD. Anything else -> None."""
+    with one it must be within MAX_AHEAD, and a date already past rolls to the next such
+    time (the ✅ question names it). Anything else -> None."""
     _require_aware(now)
     dated = _DATED.match(text or "")
     clock = dated.group(4) if dated else (text or "")
@@ -79,7 +80,9 @@ def parse_when(text: str, now: datetime) -> datetime | None:
     except ValueError:
         return None
     when = day.astimezone(UTC)
-    return when if now < when <= now + MAX_AHEAD else None
+    if when <= now:
+        return next_ist_occurrence(hm[0], hm[1], now)
+    return when if when <= now + MAX_AHEAD else None
 
 
 def ist_day_start(now: datetime) -> datetime:

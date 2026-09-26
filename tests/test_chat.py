@@ -352,13 +352,19 @@ async def test_chat_action_asks_when_ambiguous_or_missing_time(h, fakes):
     fakes["db"].add_post(draft_b="", topic="agent memory")
     fakes["nvidia"].chat_reply = {"reply": "", "action": {"name": "schedule", "post": None, "when": "18:00"}}
     await h.on_text(CHAT_ID, "schedule it at 6")
-    assert fakes["messenger"].texts()[-1].startswith("Which one?")
+    assert fakes["messenger"].texts()[-1].startswith("Which one should I schedule?")
     assert h.pending == {} and len(act_buttons(fakes)) == 2
     only = fakes["db"].add_post(status="queued", chosen="a", scheduled_at=NOW + timedelta(hours=3))
     fakes["nvidia"].chat_reply = {"reply": "", "action": {"name": "reschedule", "post": only.id[:8], "when": "sometime"}}
     await h.on_text(CHAT_ID, "move it")
-    assert fakes["messenger"].texts()[-1] == "When should it go out? e.g. 6pm, 18:30, or 2026-09-29 08:00 (IST)."
+    assert fakes["messenger"].texts()[-1].startswith("When should it go out? Tap a time")
     assert h.pending == {}
+    hours = act_buttons(fakes)
+    assert hours[0].startswith("act:when:") and hours[0].endswith(":0900")  # 9 AM first
+    await h.on_callback(CHAT_ID, "cb1", hours[0])
+    assert fakes["messenger"].texts()[-1].startswith("Move this to Wed 23 Sep, 09:00 AM IST?")
+    await h.on_text(CHAT_ID, "yes")
+    assert fakes["db"].posts[only.id]["scheduled_at"] == datetime(2026, 9, 23, 3, 30, tzinfo=UTC)
 
 
 async def test_made_up_ref_offers_the_real_posts_and_a_pick_carries_on(h, fakes):
@@ -438,6 +444,66 @@ async def test_text_schedule_question_with_a_time_becomes_buttons(h, fakes):
     assert fakes["messenger"].texts()[-1].startswith("Schedule this for Tue 22 Sep, 06:00 PM IST?")
     await h.on_text(CHAT_ID, "yep")
     assert fakes["db"].posts[post.id]["status"] == "queued"
+
+
+async def test_discard_button_asks_first_and_x_changes_nothing(h, fakes):
+    """Live bug 2026-09-26: a stray 🗑 tap on "Queued ✓" discarded a scheduled post."""
+    from app.telegram_ui import build_callback
+
+    post = fakes["db"].add_post(status="queued", chosen="a", scheduled_at=NOW + timedelta(hours=3))
+    await h.on_callback(CHAT_ID, "cb1", build_callback("drop", post.id), message_id=9)
+    assert fakes["db"].posts[post.id]["status"] == "queued"  # nothing on the single tap
+    assert fakes["messenger"].texts()[-1].startswith("Discard this (scheduled Tue 22 Sep, 01:00 PM IST)?")
+    assert ("edit_keyboard", CHAT_ID, (9, None)) not in fakes["messenger"].sent  # the post's buttons stay until ✅
+    await h.on_callback(CHAT_ID, "cb2", act_buttons(fakes)[1])  # ✖
+    assert fakes["db"].posts[post.id]["status"] == "queued"
+    await h.on_callback(CHAT_ID, "cb3", build_callback("drop", post.id))
+    await h.on_callback(CHAT_ID, "cb4", act_buttons(fakes)[0])  # ✅
+    assert fakes["db"].posts[post.id]["status"] == "failed"
+    assert "🗑 Discarded. It will never post." in fakes["messenger"].texts()
+
+
+async def test_unschedule_button_asks_first(h, fakes):
+    from app.telegram_ui import build_callback
+
+    post = fakes["db"].add_post(status="queued", chosen="a", scheduled_at=NOW + timedelta(hours=3))
+    await h.on_callback(CHAT_ID, "cb1", build_callback("unq", post.id))
+    assert fakes["db"].posts[post.id]["status"] == "queued"
+    await h.on_text(CHAT_ID, "yes")
+    assert fakes["db"].posts[post.id]["status"] == "awaiting_choice"
+
+
+async def test_post_now_button_asks_first(h, fakes):
+    from app.telegram_ui import build_callback
+
+    later = NOW + timedelta(hours=3)
+    post = fakes["db"].add_post(status="queued", chosen="a", scheduled_at=later)
+    await h.on_callback(CHAT_ID, "cb1", build_callback("asap", post.id))
+    assert fakes["db"].posts[post.id]["scheduled_at"] == later  # nothing on the single tap
+    assert fakes["messenger"].texts()[-1].startswith("Post this now (instead of Tue 22 Sep, 01:00 PM IST)?")
+    await h.on_callback(CHAT_ID, "cb2", act_buttons(fakes)[0])
+    row = fakes["db"].posts[post.id]
+    assert row["status"] == "queued" and row["scheduled_at"] < later
+
+
+@pytest.mark.parametrize(
+    ("said", "scope", "hits_scheduled"),
+    [
+        ("discard all", "all", False),  # the model's "all" alone: waiting drafts only
+        ("discard all drafts", "all_scheduled", False),  # a model-widened scope is ignored
+        ("clear out all my posts", "all", False),
+        ("discard all scheduled posts", "all_scheduled", True),
+        ("discard everything", "all", True),
+    ],
+)
+async def test_bulk_scope_follows_his_words_not_the_model(h, fakes, said, scope, hits_scheduled):
+    draft = fakes["db"].add_post(draft_b="", topic="eval costs")
+    queued = fakes["db"].add_post(status="queued", chosen="a", scheduled_at=NOW + timedelta(hours=3), topic="stablecoins")
+    fakes["nvidia"].chat_reply = {"reply": "", "action": {"name": "discard", "post": scope}}
+    await h.on_text(CHAT_ID, said)
+    await h.on_callback(CHAT_ID, "cb", act_buttons(fakes)[0])
+    assert fakes["db"].posts[queued.id]["status"] == ("failed" if hits_scheduled else "queued")
+    assert fakes["db"].posts[draft.id]["status"] == ("awaiting_choice" if said == "discard all scheduled posts" else "failed")
 
 
 def test_pick_labels_end_on_a_whole_word():

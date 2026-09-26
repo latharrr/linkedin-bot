@@ -41,6 +41,12 @@ async def tap(h, action, post_id, arg=None, chat_id=CHAT_ID):
     await h.on_callback(chat_id, "cbid", build_callback(action, post_id, arg))
 
 
+async def confirm(h, fakes):
+    """Tap ✅ on the latest ✅/✖ question."""
+    yes = next(cb for _, cb in fakes["messenger"].keyboards()[-1][0] if cb.startswith("act:yes:"))
+    await h.on_callback(CHAT_ID, "cb-yes", yes)
+
+
 # ── whitelist (through real PTB Update objects) ─────────────────────────────
 def _msg_update(chat_id: int, text: str) -> Update:
     msg = Message(message_id=1, date=NOW, chat=Chat(id=chat_id, type="private"), text=text)
@@ -190,6 +196,9 @@ async def test_pick_then_now(h, fakes):
     assert fakes["db"].posts[post.id]["chosen"] == "b"
     assert fakes["messenger"].keyboards()[-1] == time_keyboard(post.id)
     await tap(h, "time", post.id, "now")
+    assert fakes["db"].posts[post.id]["status"] == "awaiting_choice"  # ⚡ Now asks first
+    assert fakes["messenger"].texts()[-1].startswith("Post this now?")
+    await confirm(h, fakes)
     row = fakes["db"].posts[post.id]
     assert row["status"] == "queued" and row["scheduled_at"] == NOW + timedelta(minutes=2)
     assert fakes["messenger"].texts()[-1].startswith("Queued ✓ Draft B")
@@ -205,8 +214,9 @@ async def test_time_9am_6pm(h, fakes, arg, expected):
 async def test_double_tap_time_second_is_expired(h, fakes):
     post = fakes["db"].add_post(chosen="a")
     await tap(h, "time", post.id, "now")
+    await confirm(h, fakes)
     await tap(h, "time", post.id, "6pm")
-    assert fakes["messenger"].answers() == ["Queued", "Expired"]
+    assert fakes["messenger"].answers() == ["Confirm?", "Queued", "Expired"]
     assert fakes["db"].posts[post.id]["scheduled_at"] == NOW + timedelta(minutes=2)
 
 

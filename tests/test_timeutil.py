@@ -113,12 +113,14 @@ def test_parse_ts():
         ("12am", ist(2026, 9, 23, 0, 0)),
         ("2026-09-29 08:00", ist(2026, 9, 29, 8, 0)),
         ("2026-09-29 9am", ist(2026, 9, 29, 9, 0)),
+        ("2026-09-21 08:00", ist(2026, 9, 23, 8, 0)),  # a past date rolls to the next 8 AM
+        ("2026-09-22 09:00", ist(2026, 9, 23, 9, 0)),  # today, already past
     ],
 )
 def test_parse_when_ok(text, expected):
     assert parse_when(text, ist(2026, 9, 22, 10, 0)) == expected
 
 
-@pytest.mark.parametrize("text", ["", "soon", "25:00", "13pm", "2026-09-21 08:00", "2026-13-01 08:00", "2027-09-29 08:00"])
+@pytest.mark.parametrize("text", ["", "soon", "25:00", "13pm", "2026-13-01 08:00", "2027-09-29 08:00"])
 def test_parse_when_rejects_garbage_past_and_far_future(text):
     assert parse_when(text, ist(2026, 9, 22, 10, 0)) is None
