@@ -4,9 +4,47 @@ A running record of what was built, why, and what's left. Read this first when y
 - **Source of truth for requirements:** `SPEC.md`, as overridden by amendments A1–A5 (below).
 - **User-facing setup and the full decision list:** `README.md`.
 
-_Last updated: 2026-09-23 (project finalized)_
+_Last updated: 2026-09-26 (P0 and Phase 2 committed; Phase 1 deployed, waiting on its live gate)_
 
-## ★ Final state (read this first)
+## ★ Current state, 2026-09-26 (read this first)
+
+**Mission:** LinkedIn only. This is his personal posting system: Telegram-controlled, voice-locked, and it never invents, repeats or destroys without asking. The multi-platform/SaaS work (other publishers, multi-user accounts, billing) is **parked, not cancelled**. `app/publishers/` stays, with LinkedIn as the reference adapter.
+
+**Runs on the VPS** in `/opt/automations/linkedin-bot` as two Docker containers (`bot` and `scheduler`; `docker compose up -d --build`). The scheduler runs `dispatcher.py` every 5 minutes, plus the 08:00 nudge and the 14:00 fallback. Tests and lint run in the `linkedin-bot-test` image (see README → Setup). **Workflow for every step:** tests and lint green → redeploy → he verifies live on Telegram → commit on its own, checking for secrets.
+
+### Commits
+
+| Commit | What |
+|---|---|
+| `659aff1` **P0** | Confirm-first destructive buttons (🗑 ↩️ ⚡, and ⚡ Now in the time picker); typed "post it now" refused; bulk scope hardened ("all" = waiting drafts unless he says scheduled/queued/everything); clarify-don't-guess (topic matching, pick lists, no-match offers, hour buttons, "yes to what?", asking for referral codes and similar); grounding hard gate (`app/grounding.py`, `pipeline.GateCheck` → `Ungrounded` → the bot asks for the real detail); 14-day no-repeat (`claims_used` logged per row); third-party numbers tagged `[verify]` and blocked from scheduling |
+| `b6523f9` **Phase 2** | Niche + weighted pillars (`pillars.toml`, no pillar twice in a row), voice rules (curiosity-gap hook, stake before lesson or omitted, P.S. question ending, no bold-Unicode, emoji or hashtag dumps), off-niche refusal with ✍️ Draft anyway. **Plus the three conversation fixes:** (1) standing rules he states ("keep my personal story out", "no politics") persist across restarts until lifted (`app/constraints.py`, settings key `session_constraints:<chat_id>`) and filter chat replies, ideas and drafts; (2) ideas already shown in a chat are never pitched again, and "more"/"what's new"/"what happened today" is a new fetch on other keywords; (3) news ideas must cite a fetched headline by number and show source, date and URL; a failed or empty fetch is said out loud |
+
+### Phase 1: DEPLOYED but UNCOMMITTED
+
+The publisher extraction: `app/publishers/{base,linkedin}.py`, `dispatcher.py`, the platform columns in `app/db.py`, the `NotPublished`/`MaybeLive` classes in `app/linkedin.py`, `scripts/schema.sql`, `scripts/migrations/2026-09-26_platforms.sql` (applied to the live DB), and `tests/test_publishers.py`. These are the only uncommitted changes.
+
+**Gate before committing:**
+1. He schedules one real post.
+2. "Posted ✓" arrives.
+3. Check the row: **`platform_data.linkedin` must hold the post ID, URL and image ID.** `platform_post_id` alone proves nothing, because the migration backfilled it from `post_url` (the 2026-09-23 post has it, with empty `platform_data`). Only the publisher layer's `succeed()` writes `platform_data`.
+4. Then commit Phase 1 on its own.
+
+### Never regress
+
+- **The stablecoins incident (2026-09-26):** a single stray 🗑 tap on a "Queued ✓" message discarded a scheduled post. That's why every destructive button asks ✅/✖ first and ✖ leaves the post and its buttons untouched. Tests: `test_discard_button_asks_first_and_x_changes_nothing` and related.
+- Nothing mutates without his explicit ✅ or button tap. The model proposes; the bot asks and executes.
+
+### Gotchas
+
+- **The claim checker is model-based and can be noisy.** Since the gate blocks instead of warning, a noisy audit shows up as extra "✋ I held this draft back" asks. It's tunable (`pipeline.audit_flags` / `could_be_about_him`) if it over-blocks.
+- **The ⚡ copy says "within the next few minutes"** because the scheduler runs every 5 minutes: "now" means `now + 2 min`, then the next tick.
+- **Bold-Unicode is always stripped.** The `UNBOLD_DRAFTS` toggle was removed in Phase 2.
+- **Groq 429s** get 1 retry with at most an 8-second wait (`max_attempts=2`, `minute_wait_cap=8`), then the fallback chain takes over (`GROQ_API_KEY_2`, then the free providers).
+- **Each news fetch costs 2 NewsData credits** (2 keywords per fetch, rotating) and no model calls. The ideas pitch itself is one model call.
+- `load_pillars()` is cached per process: edit `pillars.toml`, then redeploy.
+- The grounding detectors were calibrated on his real drafts: a 6-word run from the profile counts as a lift; naming PicaPool or a year doesn't; third-party stats aren't his claims.
+
+## Earlier state, 2026-09-23 (superseded; kept for history)
 
 - **Shipped and working:**
   - a conversational Telegram bot;

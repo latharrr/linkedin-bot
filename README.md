@@ -1,48 +1,235 @@
-# LinkedIn ghostwriter bot
+# LinkedIn posting bot
 
-> A personal LinkedIn ghostwriter today; the base for a small subscription service tomorrow. See [Vision and roadmap](#vision-and-roadmap).
-
-You talk to a Telegram bot. When you ask for a post, it researches the topic with every source at once (Groq browsing, Bright Data ChatGPT Search, Tavily, NewsData), keeping only facts whose numbers appear on the page they cite. It writes two versions behind the scenes, merges them into **one final post** in your voice using your profile card and story bank, runs de-AI, number, truth and length checks, and makes **one designed cover image** (a FLUX photo plus a bold headline). It posts to LinkedIn **only after you tap ✅ Post this and pick a time**. `SPEC.md` was the original source of truth; the decisions below record everything that changed since.
+A Telegram-controlled LinkedIn posting system for one person, run as an agentic chat. You ask for ideas or a post. The bot researches it and writes one draft plus one image in your voice. You tune or approve it and pick a time, and the scheduler posts it. **Nothing is published, scheduled, moved or deleted without your explicit ✅ or button tap.**
 
 ```
-Telegram ──► bot.py (long polling)                    dispatcher.py (every 5 min when live)
-              │ brief/link → research (4 sources)       │ claim queued+due rows → upload image
-              │ → outline (audited) → 2 candidates      │ → POST /rest/posts → "Posted ✓ url"
-              │ → final post → de-AI → numbers → polish │ → heartbeat for /status
-              │ → shape → cover image → preview+buttons │
-              └──────────── Supabase (posts, chat_state, past_posts, voice_profile, settings, Storage, bot_api_calls)
+you ─► Telegram ─► bot.py (long polling, chat agent)          dispatcher.py (scheduler, every 5 min)
+                    │ ideas (pillars + sourced news)            │ claim queued + due rows
+                    │ brief → research → outline → draft        │ → app/publishers/<platform>
+                    │ → grounding gate → image → preview        │ → "Posted ✓ <url>" in Telegram
+                    │ ✅ / buttons → queue                       │ → platform_post_id + platform_data on the row
+                    └──────────── Supabase: posts queue, chat_state, voice_profile, settings, Storage, usage ledger
 ```
 
-## Vision and roadmap
+**The loop:**
+1. "What should I post about?" gets ideas, each with a pillar tag, a hook and a ✍️ Draft button.
+2. Pick one; the bot researches it and sends one draft with one image.
+3. Tune it (✂️ 🎣 🔥 ✏️ 🖼) or tap **✅ Post this** and pick a time.
+4. The scheduler posts it and you get **Posted ✓**.
 
-**The goal:** turn this into a small startup. Professionals connect their LinkedIn, give it their voice (how they write, what they post about, their real stories), and get researched, human-sounding posts that go out only after they approve them. They pay a small weekly or monthly subscription and use it through **Telegram or WhatsApp**, with their own status board and dashboard.
+Read-only questions ("what's queued", "any drafts", "dashboard", "ideas", "status") are answered at any time.
 
-### Phase 1: prove it on myself (now)
+## Architecture
 
-Run it for my own LinkedIn and measure it before anyone pays for it.
+| Part | What it does |
+|---|---|
+| `bot.py` | The Telegram bot: chat agent (read-only tools plus proposed actions), inline buttons, confirmations, the generation runs. Also the `--nudge`, `--fallback` and `--token-check` modes |
+| `dispatcher.py` | The scheduler. Runs every 5 minutes (`deploy/docker-scheduler.sh`), claims queued rows that are due, and hands each to its platform's publisher. Classifies failures as retryable or "may already be live" |
+| `app/publishers/` | The publisher layer. `base.py` defines the `Publisher` interface (`Draft` in, `PublishResult` out) and the error classes `NotPublished` (safe to retry) and `MaybeLive` (a human checks). `linkedin.py` is the reference implementation: image upload, Posts API, little-text escaping. The row gets `platform_post_id` and `platform_data.<platform>` |
+| Supabase | The `posts` table is the queue (`awaiting_choice` → `queued` → `posting` → `posted`/`failed`, with conditional updates so two actors can't both win). Also `chat_state`, `voice_profile`, `settings` (tokens, standing rules, last pillar), Storage for images, and `bot_api_calls` for usage |
+| `app/pipeline.py` | Generation: research → outline (audited) → two candidates → one final post → de-AI → number repair → polish → shape → P.S. ending → **grounding gate** → image |
+| `app/grounding.py` | The gate's deterministic checks: profile lifts, 14-day repeats, blanks, unbacked numbers about you, `[verify]` tags |
+| `app/constraints.py` | Rules you state in chat ("keep my personal story out", "no politics"), persisted until you lift them |
+| `app/ideas.py` · `app/pillars.py` · `pillars.toml` | Pillar-rotated ideas with sourced news · the weighted rotation · niche and pillar config |
+| `app/style_check.py` · `app/writer.py` · `app/prompts/` | Voice rules and cleanup · model calls · every prompt |
+| `app/research.py` · `app/news.py` · `app/brightdata.py` | Research with page grounding (Groq browsing, Bright Data, Tavily) · NewsData headlines |
+| `app/groq.py` · `app/openrouter.py` · `app/nvidia.py` | Writer and browsing (Groq), the free fallback chain, embeddings and FLUX images (NVIDIA) |
 
-- [x] One researched post per run, in my voice, with a designed cover and two-tap approval
-- [x] Truth checks (claim audit, invented-detail detector, ⚠ flags), human-text cleanup, story bank interview
-- [x] Status board, queue, drafts, comments, ideas, usage dashboard
-- [ ] Post weekly for 6-8 weeks; log likes and comments with `/stats` to see what performs
-- [ ] Fill the story bank (`/interview`) and measure how often a post needs ⚠ fixes before approval
-- [ ] Decide on hosting (the Mac today, a small always-on server later) and schedule the publisher
-- [ ] Track real cost per post (ledger + paid Groq card) to price the subscription
+Deployment: two containers from one image (`docker-compose.yml`), `bot` (the Telegram bot) and `scheduler` (the dispatcher loop plus the 08:00 nudge and 14:00 fallback). Secrets reach them through `env_file: .env`, never the image. Logs are in `./logs`.
 
-### Phase 2: more features (before opening up)
+## Behaviour rules
 
-- Better writing: a stronger model for the final editor (fewer invented details, fuller posts)
-- Formats that reach further: carousels (PDF), polls, multi-image posts
-- A content calendar: a weekly plan from the story bank and niche news
-- An engagement loop: pull likes and comments automatically, learn from what performs, suggest replies
-- Scheduling intelligence: best times from each person's own history
-- A WhatsApp channel next to Telegram (the WhatsApp Business Platform)
+- **Nothing changes without your ✅.** Chat actions (schedule, reschedule, unschedule, discard) and inline buttons alike. The model only *proposes*; the bot asks, and the bot executes.
+- **🗑 Discard, ↩️ Unschedule and ⚡ Post now always ask ✅/✖ first**, and so does ⚡ Now in the time picker. The question names the post and its time. ✖ leaves the post and its buttons exactly as they were. (Why: a single stray 🗑 tap on a "Queued ✓" message once killed a scheduled post.)
+- **"Post it now" typed in chat is refused.** Posting immediately is button-only.
+- **Bulk scope follows your words, not the model's.** "Discard all" means waiting drafts only. Scheduled posts are included only when you say "scheduled", "queued" or "everything".
+- **Clarify, don't guess.** If a topic matches several posts, you get a pick list of just those. If it matches none, the bot says so and offers 📝 what's waiting or ✍️ a new draft; it never invents a reference. An unclear destructive scope gets scope buttons, and a vague or missing time gets hour buttons (9 AM first). The bot doesn't over-ask: one obvious candidate goes straight to ✅/✖, and read-only questions never need a clarification.
+- **Typed yes/no answers the pending ✅/✖ directly**, without another model turn ("yes", "yep", "do it", "no", "keep it"). A "yes" with nothing pending gets "Yes to what?". A plain "ok" is chat.
+- **Inputs only you know are asked for, never invented.** "…and add my referral code" without the code gets "What's your referral code?".
+- Past times roll forward to the next valid slot. "Tune", "new image" and "show" need no confirmation.
 
-### Phase 3: open to the public (the startup)
+## Grounding
 
-What each customer gets: LinkedIn connection by OAuth, onboarding (voice from their past posts, a profile card, a story-bank interview), posts they approve from Telegram or WhatsApp, their own `/status` board and usage dashboard, and a weekly or monthly subscription.
+- **Every claim about your history, employers, metrics or timelines must trace to the brief, your background profile, your story bank or your own answer.** Anything that doesn't gets one grounded rewrite. If it still doesn't trace, **the draft is held back**: nothing is saved or sent, and the bot asks you for the real detail ("✋ I held this draft back instead of guessing…"). You can answer, tap ✍️ Write it without a personal story, or tap ✖ Drop it. A ⚠ warning is never shipped instead.
+- **Third-party numbers nobody can verify are tagged `[verify]`** in the text, never stated as fact. A draft with a `[verify]` tag can't be scheduled until you resolve it.
+- **14-day no-repeat.** Each draft logs the claims it made about you. A story, metric or achievement used in a post from the last 14 days (posted or scheduled) is blocked; the writer is told to reframe instead.
+- **The background profile is context, never copy.** A line that copies 6+ words in a row from your profile card (the credentials paragraph, say) is blocked. The personal stake must be one specific anecdote tied to this post's idea.
+- Tunes (✂️ 🎣 🔥) that add an ungrounded claim are thrown away and the original kept.
 
-**What has to change in the code (it's single-user today):**
+## Niche, pillars and voice
+
+**Niche:** "a student founder's-office operator who builds AI and growth systems in public and translates between engineering and business." Every idea and draft is filtered through it. An off-niche brief is refused, with a ✍️ Draft anyway button.
+
+**Pillars** live in `pillars.toml`. Edit the weights there and restart; no code changes needed. Every idea is tagged, the rotation is weighted, and the same pillar never comes up twice in a row.
+
+| Pillar | Weight |
+|---|---|
+| Build in public (what shipped this week) | 30% |
+| Attribution & growth systems | 25% |
+| CS → startup metaphors | 20% |
+| Personal stakes | 15% |
+| Honest AI war stories | 10% |
+
+**Voice rules (every draft):**
+- The hook lives in lines 1–2 and is a curiosity gap, never a thesis statement.
+- A personal stake comes before the lesson: real and topical, or omitted.
+- One idea per post, and real numbers only.
+- The post ends on a genuine `P.S.` question.
+- **Banned:** bold-Unicode (always stripped), emoji spam, hashtag dumps (the formatter keeps at most 2; the validator rejects more than 4), generic advice with no story, borrowed credibility.
+
+## Ideas
+
+- Every news-based idea shows its source: 📰 title (source, date) URL. The model must cite a fetched headline by number; an idea citing anything else is dropped. If the fetch fails or finds nothing new, the bot says so and never makes up headlines.
+- Ideas already shown in the conversation are never pitched again, reworded or not. "More ideas", "something more interesting", "what's new" and "what happened today in tech" each trigger a genuinely new fetch on other keywords, skipping articles already used. Each fetch uses 2 NewsData credits and no model calls.
+- **Standing rules** such as "keep my personal story out for now", "no politics" or "avoid crypto posts" persist across messages and restarts until you lift them ("personal stories are fine again", "politics is fine now", "clear my constraints"). They filter chat replies, ideas and drafts.
+
+## Telegram reference
+
+| Say or tap | What happens |
+|---|---|
+| "what should I post about?" · 💡 Ideas · `/ideas` | 3 pillar-tagged ideas with hooks, sources for news, and ✍️ Draft buttons |
+| "more ideas" · "what's new" · "what happened today in tech" | A new fetch; never the same ideas twice |
+| "make a post about X" · `/new X` · a pasted link | Research → one post + one image, with buttons |
+| ✂️ Shorter · 🎣 New hook · 🔥 Bolder · ✏️ Edit · 🔄 New version · 🖼 New image | Tune the waiting draft (no confirmation needed) |
+| ✅ Post this → a time | 🌅 9 AM (best) · 🕕 6 PM · 🌙 9 PM · ⏱ 30 min · ⚡ Now (asks first) · ✍️ Custom |
+| "schedule the eval-costs one for 9am" · "move it to Friday 9am" | ✅/✖ question naming the post and the time |
+| "discard it" · "unschedule the KPI draft" · "discard all drafts" | ✅/✖ (or a pick list, or scope buttons) first |
+| 🗑 · ↩️ · ⚡ Post now under a post | ✅/✖ first |
+| "yes" / "no" | Answers the pending ✅/✖ |
+| "what's queued" · "any drafts" · 📋 `/status` · 📅 `/queue` · 📝 `/drafts` · 📊 `/dashboard` | Live state: posted (with links), scheduled, waiting, publisher health, API usage |
+| "keep my personal story out" · "no politics" · "… is fine again" | Standing rules, until lifted |
+| 🎙 `/interview` · `/bank` | Answer questions; your answers become true material |
+| 💬 `/comment <link or text>` | Two comment drafts to copy (the bot never posts comments) |
+| `/stats` | Log likes and comments for recent posts |
+| `/cancel` | Cancel a pending edit, time, stats or URL reply, or a draft being generated |
+
+The scheduler also sends "What's today's topic?" at 08:00 IST, and at 14:00 IST drafts from a pillar idea if you sent nothing that day (drafts only, never posts). "⚠ May already be live" means you check LinkedIn, then tap **Live ✓** or **Not live**.
+
+## Setup
+
+### Environment (`.env`)
+
+Copy `.env.example` to `.env` (`chmod 600`). `.env` is gitignored and never baked into the image.
+
+**Required:**
+
+| Variable | What |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | From BotFather |
+| `MY_CHAT_ID` | Your chat id; every other chat is ignored |
+| `SUPABASE_URL` · `SUPABASE_SERVICE_KEY` | The project URL and the service_role key |
+| `NVIDIA_API_KEY` | Embeddings and FLUX images |
+| `GROQ_API_KEY` | The default writer and browsing research |
+| `LINKEDIN_API_VERSION` | `YYYYMM` |
+| `LINKEDIN_CLIENT_ID` · `LINKEDIN_CLIENT_SECRET` | Only for `scripts/linkedin_auth.py`; the token itself lives in the `settings` table |
+
+**Recommended:**
+- `NEWSDATA_API_KEY`: sourced news ideas.
+- `NICHE_KEYWORDS`: the news search terms.
+- `GROQ_API_KEY_2` and `GROQ2_DAILY_USD`: a paid Groq failover with a daily cap.
+- `OPENROUTER_API_KEY`, `MODELSCOPE_API_KEY`, `ZENMUX_API_KEY`: the free writer fallbacks.
+- `TAVILY_API_KEY`, `BRIGHTDATA_API_KEY`: research backups.
+
+The rest have defaults; see `.env.example`.
+
+### Tests and lint
+
+There is no host virtualenv. Tests and lint run in the test image with the repo mounted:
+
+```bash
+docker run --rm -v "$PWD":/app -w /app linkedin-bot-test sh -c "ruff check . && python -m pytest -q -p no:cacheprovider"
+```
+
+Tests make no network calls; a fixture blocks sockets. The model providers, Supabase, LinkedIn and Telegram are faked at the HTTP or client level, so the real clients and pipeline code run. Tests and lint must be green before every commit.
+
+### Deploy and redeploy
+
+```bash
+docker compose up -d --build                 # rebuild the image, restart bot + scheduler
+docker compose ps                            # both "Up"
+docker compose logs --since 1m bot           # expect {"event": "bot_started"}
+tail -f logs/dispatcher.log                  # one "dispatch_done" every 5 minutes
+docker compose exec scheduler python dispatcher.py --dry-run   # what would post, without posting
+```
+
+After a redeploy, verify the change live on Telegram before calling it done.
+
+### One-time setup
+
+Script commands below mount the repo (`-v "$PWD":/app`), because `seed_posts.jsonl` and `out/` are kept out of the image.
+
+#### 1. Supabase
+
+1. Create a project. In **SQL editor**, run `scripts/schema.sql` (SPEC §4 verbatim, plus `awaiting_post_url`; embeddings are `vector(2048)`), then `scripts/storage.sql` (creates the public `post-images` bucket), then `scripts/usage.sql` (the API call ledger behind the usage dashboard).
+2. Put the project URL and the **service_role** key in `.env` (`SUPABASE_URL`, `SUPABASE_SERVICE_KEY`). RLS stays on; the service_role key bypasses it.
+
+**Upgrading a database created with the old 1536-dim (OpenAI) schema?** Do this once instead of step 1.1. Vectors from different models can't be compared, so every stored embedding is rebuilt; post rows, text and engagement are untouched.
+
+1. In the SQL editor, run `scripts/migrate_embeddings_2048.sql`. It drops and recreates the two RPCs, converts both vector columns to `vector(2048)`, and sets every stored vector to NULL, all in one transaction.
+2. Run:
+   ```bash
+   docker compose run --rm -v "$PWD":/app bot python scripts/reembed_corpus.py --dry-run    # counts what's missing
+   docker compose run --rm -v "$PWD":/app bot python scripts/reembed_corpus.py              # re-embeds with NVIDIA_EMBED_MODEL
+   ```
+   It fills only NULL vectors, so it's safe to re-run after an interruption. It sends 16 texts per request and pauses 2 s between requests, which keeps it under the free-tier rate limit.
+
+Until the re-embed finishes, few-shot retrieval and topic dedup find nothing, but drafting still works.
+
+#### 2. LinkedIn OAuth (on your laptop; it opens a browser)
+
+1. At developer.linkedin.com, create an app. Add the products **Share on LinkedIn** (`w_member_social`) and **Sign In with LinkedIn using OpenID Connect** (`openid profile`). Under *Auth*, add the redirect URL `http://localhost:8765/callback`.
+2. Put `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET` in a `.env` on your laptop (the same `.env` works), then:
+
+```bash
+python scripts/linkedin_auth.py
+```
+
+This writes `linkedin_access_token`, `linkedin_token_issued_at` and `linkedin_author_urn` to the `settings` table. Re-run it every ~60 days; `--token-check` warns from day 50.
+
+#### 3. Seed your voice corpus
+
+Put your 15–20 best posts in `seed_posts.jsonl`, one per line, with **real** likes and comments (format in `seed_posts.example.jsonl`):
+
+```bash
+docker compose run --rm -v "$PWD":/app bot python scripts/seed_past_posts.py seed_posts.jsonl
+```
+
+It's safe to re-run; duplicate texts are skipped.
+
+**Or scrape them automatically** (Bright Data, about $1.50 per 1,000 records; the account must be active):
+
+```bash
+docker compose run --rm -v "$PWD":/app bot python scripts/scrape_linkedin_posts.py https://www.linkedin.com/in/<you>/ --limit 100 --top 20
+```
+
+It pulls your own posts (no reposts) with their like and comment counts, and writes the top 20 by engagement to `seed_posts.jsonl`. The raw records are saved to `out/linkedin_posts_raw.json`.
+
+**Older posts:** LinkedIn only shows recent activity publicly, so scrapers miss older posts. To get all of them, use your own data export: LinkedIn → Settings → Data privacy → **Get a copy of your data** → Posts. Then:
+
+```bash
+docker compose run --rm -v "$PWD":/app bot python scripts/import_linkedin_export.py Basic_LinkedInDataExport_*.zip --enrich   # copy the zip into the repo first
+docker compose run --rm -v "$PWD":/app bot python scripts/seed_past_posts.py seed_posts.jsonl
+```
+
+`--enrich` fetches likes and comments for each exported post through Bright Data. Already-seeded posts are recognised and not duplicated. The `/stats` promotion gate opens once 5 human posts have engagement > 0.
+
+#### 4. Voice profile
+
+```bash
+docker compose run --rm -v "$PWD":/app bot python scripts/extract_voice.py
+```
+
+The NVIDIA chat model analyzes the seeded posts. The script then **asks you for your current role** and never guesses it (SPEC §2 item 10). Generation refuses to run until `current_role` is set.
+
+Optional smoke test (makes real paid calls, writes nothing to the DB, saves images to `./out/`):
+
+```bash
+docker compose run --rm -v "$PWD":/app bot python -m app.pipeline "why most student founders quit in year one"
+```
+
+## Roadmap
+
+LinkedIn only for now. The publisher layer is built so another platform can be added as a new `app/publishers/<platform>.py`. **The multi-platform and SaaS work (Telegram/Instagram/Facebook/Threads publishers, multi-user accounts, billing) is parked, not cancelled.** When it resumes, this is what has to change in the single-user code:
 
 | Today (just me) | Needed for customers |
 |---|---|
@@ -64,208 +251,10 @@ What each customer gets: LinkedIn connection by OAuth, onboarding (voice from th
 - **Privacy:** customers' posts, stories and LinkedIn tokens are personal data. Write a privacy policy and terms, support data export and deletion, and follow India's DPDP Act 2023. Keep the rule that **nothing posts without the customer's own approval**.
 - **Pricing:** measured in phase 1. Model cost is about $0.01-0.02 per post today, plus images, research credits, hosting and support time.
 
-## Current status (2026-09-23)
-
-- **Live on LinkedIn:** 1 post, https://www.linkedin.com/feed/update/urn:li:share:7508569242183757824
-- **Bot:** runs on this Mac (`bot.py`). **Publisher (`dispatcher.py`): not scheduled.** Approved posts wait until it runs, and `/status` says so.
-- **LinkedIn login:** valid until about 2026-11-22. Re-run `scripts/linkedin_auth.py` before then (the bot warns after day 50).
-- **Writer:** Groq free account first, then the paid Groq account (capped at `GROQ2_DAILY_USD`, $0.25/day; about $0.01–0.02 per post), then free fallbacks.
-- **Tests:** 907 passing, and lint is clean.
-
-## Using it (Telegram)
-
-| Tap / type | What happens |
-|---|---|
-| **✍️ New post** or `make a post about X` | Research → one post + cover image, sent to you with buttons |
-| paste a link + "something on this?" | The post is built around that article (X and LinkedIn links via Bright Data) |
-| Under the post: **✂️ Shorter · 🎣 New hook · 🔥 Bolder** | Rewrites just that aspect (kept only if it adds no unverifiable number) |
-| **✅ Post this** → pick a time | ⚡ Now · ⏱ 30 min · 🕕 6 PM · 🌙 9 PM · 🌅 9 AM · ✍️ Custom. Nothing posts without both taps |
-| **✏️ Edit** | Send your own version; your words are never auto-edited |
-| **🔄 New version · 🖼 New image · 🗑 Discard** | Redo the post, redo the cover, or drop it |
-| **📋 Status** (`/status`) | Is it posted (with link), what's scheduled, is the publisher running |
-| **📅 Queue / 📝 Drafts** | Scheduled posts (⚡ Post now · ↩️ Unschedule) / posts waiting for approval |
-| **🎙 Interview** (`/interview`, `/bank`) | Answer a few questions; your answers become true material for posts |
-| **💬 Comment** (`/comment <link or text>`) | Two comment drafts for someone else's post, to copy. The bot never posts comments |
-| **💡 Ideas** | Three fresh headlines from your niches, each with a ✍️ Draft button |
-| **📊 Dashboard** | Post status, then every API's usage: used vs left |
-| `⚠ check: "…"` under a post | A line the checks couldn't verify against your facts: fix or cut it before approving |
-
-## Run it on this Mac
-
-```bash
-cd "/Users/lathar/Desktop/linkedin bot"
-.venv/bin/python bot.py                          # the Telegram bot (keep running)
-.venv/bin/python dispatcher.py --dry-run         # show what would be posted; posts nothing
-.venv/bin/python dispatcher.py                   # publish whatever is approved and due, once
-.venv/bin/python scripts/usage_dashboard.py      # web dashboard → http://127.0.0.1:8787
-```
-
-To post automatically at the times you pick, the dispatcher has to run every 5 minutes (cron or launchd; `deploy/crontab.txt` has the line). For 24/7 use without the Mac, host both on a small server using the setup below.
-
-## Layout
-
-| Path | What |
-|---|---|
-| `bot.py` | Update handler (§5) and the `--nudge`, `--fallback`, `--token-check` cron modes |
-| `dispatcher.py` | Publisher (§6), with `--dry-run` |
-| `app/config.py` | Pydantic `Settings` read from `.env` |
-| `app/db.py` | Every Supabase query: typed models, conditional state transitions, Storage |
-| `app/pipeline.py` | §5.1 generation and regenerate. CLI: `python -m app.pipeline "brief"` |
-| `app/apiclient.py` | Shared HTTP plumbing for model providers: Bearer auth, timeouts, retry on 429/5xx, chat parsing |
-| `app/groq.py` | Groq client: chat (writer) and `browser_search` (research), plus raw page evidence from `executed_tools`. Calls are serialised for the free-tier token limit |
-| `app/nvidia.py` | NVIDIA NIM client: embeddings, FLUX.1-dev, optional chat |
-| `app/research.py` · `app/writer.py` · `app/images.py` | Browsing research with page grounding, plus the Tavily fallback · writer (prompts in `app/prompts/*.txt`) · FLUX JPEG → 1080×1350 PNG |
-| `app/style_check.py` | Mechanical check of the draft rules (clichés, hashtags, emoji bullets, length, CTA), used by the writer validation |
-| `app/verify.py` | Number normalization and verification (§5.1 step 8) |
-| `app/linkedin.py` | Little-text escaping (A1), payload, REST client, failure classification |
-| `app/corpus.py` | Corpus admission and `/stats` promotion (§5.3, §6.4) |
-| `app/telegram_ui.py` | callback_data build/parse, status guards, keyboards, preview send sequence |
-| `app/timeutil.py` | IST helpers |
-| `app/usage.py` · `app/usage_page.html` | Call ledger recorder, and the usage collector and page behind `scripts/usage_dashboard.py` |
-| `scripts/` | `schema.sql`, `storage.sql`, `linkedin_auth.py`, `seed_past_posts.py`, `extract_voice.py`, `validate_writer.py`, `usage_dashboard.py` + `usage.sql`, and the one-time `migrate_embeddings_2048.sql` + `reembed_corpus.py` |
-| `app/chat.py` · `app/linkread.py` | Conversation mode and request parsing · reading links pasted into a brief |
-| `app/brightdata.py` · `app/news.py` · `app/jev.py` | Bright Data (ChatGPT Search, X/LinkedIn posts, daily cap) · NewsData topics and context · Jev second opinion |
-| `app/cover.py` · `app/storybank.py` · `app/spend.py` | Cover image design · story bank and interview · paid-Groq daily spend cap |
-| `out/profile_card.md` | Who you are (gitignored). Stored in `voice_profile.profile`; `extract_voice.py` reloads it |
-| `deploy/` | `crontab.txt`, `bot.service` (systemd), `logrotate.conf` |
-
-## Setup (in this order)
-
-### 0. Server, code, `.env`
-
-On an always-on Linux box with Python 3.11+:
-
-```bash
-sudo useradd --system --create-home --home-dir /opt/linkedin-bot linkedinbot
-sudo -iu linkedinbot
-cd /opt/linkedin-bot && git clone <your repo> . # or copy the files here
-python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env && chmod 600 .env && mkdir -p logs
-```
-
-Fill in `.env`. You need a Telegram bot token from BotFather, your chat id from `@userinfobot`, a **Groq API key** from console.groq.com (writing and web research), an **NVIDIA API key** from build.nvidia.com (embeddings and images), and `LINKEDIN_API_VERSION`. Optional, and recommended as backups: OpenRouter, ModelScope and ZenMux keys (free writer fallbacks) and a Tavily key (research fallback). Set `LINKEDIN_API_VERSION` (`YYYYMM`). Supabase values come in step 1 and LinkedIn app values in step 2.
-
-Both free tiers are rate-limited. Groq allows 8,000 tokens/min on `gpt-oss-120b`, so a run takes about 1–3 minutes while calls wait their turn. NVIDIA allows ~40 requests/min and ~1000 credits. That's fine for one post a day, but not for bulk jobs.
-
-### 0b. Validate the writer (needs only the writer's API key)
-
-```bash
-.venv/bin/python scripts/validate_writer.py                              # WRITER_PROVIDER (default: groq gpt-oss-120b)
-.venv/bin/python scripts/validate_writer.py --provider nvidia --model nvidia/nemotron-3-super-120b-a12b  # compare
-.venv/bin/python scripts/validate_writer.py --no-repair                  # measure the de-AI pass alone
-```
-
-This runs 3 fixed briefs through the real outline → drafts → de-AI → number-repair pipeline and checks every draft at each stage for:
-- banned clichés and "it's not X, it's Y";
-- more than 3 hashtags, and emoji bullets;
-- numbers that aren't in the research;
-- length and the closing question.
-
-It exits non-zero if any final draft breaks a hard rule, and writes the full drafts to `out/validation-*.md`. **Read them**: the checks catch rule breaks, not flat writing. If the writer can't pass, switch `WRITER_PROVIDER` or the model before going live.
-
-### 1. Supabase
-
-1. Create a project. In **SQL editor**, run `scripts/schema.sql` (SPEC §4 verbatim, plus `awaiting_post_url`; embeddings are `vector(2048)`), then `scripts/storage.sql` (creates the public `post-images` bucket), then `scripts/usage.sql` (the API call ledger behind the usage dashboard).
-2. Put the project URL and the **service_role** key in `.env` (`SUPABASE_URL`, `SUPABASE_SERVICE_KEY`). RLS stays on; the service_role key bypasses it.
-
-**Upgrading a database created with the old 1536-dim (OpenAI) schema?** Do this once instead of step 1.1. Vectors from different models can't be compared, so every stored embedding is rebuilt; post rows, text and engagement are untouched.
-
-1. In the SQL editor, run `scripts/migrate_embeddings_2048.sql`. It drops and recreates the two RPCs, converts both vector columns to `vector(2048)`, and sets every stored vector to NULL, all in one transaction.
-2. Run:
-   ```bash
-   .venv/bin/python scripts/reembed_corpus.py --dry-run    # counts what's missing
-   .venv/bin/python scripts/reembed_corpus.py              # re-embeds with NVIDIA_EMBED_MODEL
-   ```
-   It fills only NULL vectors, so it's safe to re-run after an interruption. It sends 16 texts per request and pauses 2 s between requests, which keeps it under the free-tier rate limit.
-
-Until the re-embed finishes, few-shot retrieval and topic dedup find nothing, but drafting still works.
-
-### 2. LinkedIn OAuth (on your laptop; it opens a browser)
-
-1. At developer.linkedin.com, create an app. Add the products **Share on LinkedIn** (`w_member_social`) and **Sign In with LinkedIn using OpenID Connect** (`openid profile`). Under *Auth*, add the redirect URL `http://localhost:8765/callback`.
-2. Put `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET` in a `.env` on your laptop (the same `.env` works), then:
-
-```bash
-python scripts/linkedin_auth.py
-```
-
-This writes `linkedin_access_token`, `linkedin_token_issued_at` and `linkedin_author_urn` to the `settings` table. Re-run it every ~60 days; `--token-check` warns from day 50.
-
-### 3. Seed your voice corpus
-
-Put your 15–20 best posts in `seed_posts.jsonl`, one per line, with **real** likes and comments (format in `seed_posts.example.jsonl`):
-
-```bash
-.venv/bin/python scripts/seed_past_posts.py seed_posts.jsonl
-```
-
-It's safe to re-run; duplicate texts are skipped.
-
-**Or scrape them automatically** (Bright Data, about $1.50 per 1,000 records; the account must be active):
-
-```bash
-.venv/bin/python scripts/scrape_linkedin_posts.py https://www.linkedin.com/in/<you>/ --limit 100 --top 20
-```
-
-It pulls your own posts (no reposts) with their like and comment counts, and writes the top 20 by engagement to `seed_posts.jsonl`. The raw records are saved to `out/linkedin_posts_raw.json`.
-
-**Older posts:** LinkedIn only shows recent activity publicly, so scrapers miss older posts. To get all of them, use your own data export: LinkedIn → Settings → Data privacy → **Get a copy of your data** → Posts. Then:
-
-```bash
-.venv/bin/python scripts/import_linkedin_export.py ~/Downloads/Basic_LinkedInDataExport_*.zip --enrich
-.venv/bin/python scripts/seed_past_posts.py seed_posts.jsonl
-```
-
-`--enrich` fetches likes and comments for each exported post through Bright Data. Already-seeded posts are recognised and not duplicated. The `/stats` promotion gate opens once 5 human posts have engagement > 0.
-
-### 4. Voice profile
-
-```bash
-.venv/bin/python scripts/extract_voice.py
-```
-
-The NVIDIA chat model analyzes the seeded posts. The script then **asks you for your current role** and never guesses it (SPEC §2 item 10). Generation refuses to run until `current_role` is set.
-
-Optional smoke test (makes real paid calls, writes nothing to the DB, saves images to `./out/`):
-
-```bash
-.venv/bin/python -m app.pipeline "why most student founders quit in year one"
-```
-
-### 5. Bot service and cron
-
-```bash
-sudo cp deploy/bot.service /etc/systemd/system/linkedin-bot.service
-sudo cp deploy/logrotate.conf /etc/logrotate.d/linkedin-bot
-sudo systemctl daemon-reload && sudo systemctl enable --now linkedin-bot
-journalctl -u linkedin-bot -f        # expect {"event": "bot_started"}
-```
-
-Don't install the crontab yet. Step 6 installs it; from then on, real posts go out.
-
-**Timezone:** `CRON_TZ=Asia/Kolkata` is honoured by cronie (RHEL/Fedora/Arch) but **ignored by Debian/Ubuntu cron**. On Debian/Ubuntu, run `sudo timedatectl set-timezone Asia/Kolkata`. The application itself is timezone-independent (UTC storage, explicit IST conversion), so only the cron trigger times depend on this.
-
-### 6. First dry run, then go live
-
-1. In Telegram, send a brief. Tap **Post A** or **Post B**, then **Now** (it's scheduled 2 minutes out).
-2. Wait 2 minutes, then:
-
-```bash
-.venv/bin/python dispatcher.py --dry-run
-```
-
-This logs the exact `/rest/posts` payload (escaped commentary, author URN) and verifies the image downloads as PNG. It never calls LinkedIn, never claims or changes a row, and sends nothing.
-
-3. If the payload looks right, install the crontab. The queued post goes out on the next 5-minute tick, and you get "Posted ✓ <url>" in Telegram.
-
-```bash
-crontab deploy/crontab.txt
-```
-
 ## Usage dashboard
 
 ```bash
-.venv/bin/python scripts/usage_dashboard.py        # → http://127.0.0.1:8787
+python scripts/usage_dashboard.py        # → http://127.0.0.1:8787 (needs Python + the .env; binds to localhost only)
 ```
 
 One card per service, showing what's used and what's left: Groq, OpenRouter, Tavily, NVIDIA, ModelScope, ZenMux, Supabase, LinkedIn and Telegram. Each number is labelled with where it came from:
@@ -278,24 +267,6 @@ One card per service, showing what's used and what's left: Groq, OpenRouter, Tav
 | **estimate** | Used where the provider exposes nothing (NVIDIA credits: about 1 per request) |
 
 Keys are used only inside the local server; the page and `/api/usage` carry numbers, never keys. The server binds to `127.0.0.1`, so only your machine can open it. The page refreshes every 60 s. The ledger only counts calls made after it was added (2026-09-23). `--once` prints the JSON and exits.
-
-## Daily use
-
-- **08:00 IST (`--nudge`):** "What's today's topic?" Reply with a topic or a link, "you pick" (today's news), or "not today".
-- **14:00 IST (`--fallback`):** if you sent nothing today, it drafts from niche news. Drafts only.
-- **Preview:** one cover image, then **YOUR POST** with `words · chars · hook N/140`, any `⚠ unverified numbers` / `⚠ check` lines, and its buttons.
-- **After posting:** "Posted ✓ link", plus a reminder to reply to comments in the first 60–90 minutes and to hold big edits for 3 hours.
-- **`/stats`:** reply with `likes comments` per recent post, to teach the bot what works.
-- **"⚠ May already be live":** check LinkedIn, then tap **Live ✓** (and paste the URL) or **Not live** (it re-queues).
-
-## Tests
-
-```bash
-.venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest
-```
-
-Tests make no network calls; a fixture blocks sockets. NVIDIA NIM is faked at the HTTP level (`httpx.MockTransport` serving the real chat/embeddings/FLUX JSON shapes), so the real `NvidiaClient`, `Writer`, `ImageMaker` and `Embedder` code runs; Tavily is faked at the SDK level. The `openai` and `anthropic` packages are not dependencies at all (a test enforces this). `tests/test_db.py` drives the real `Database` class through supabase-py against a mocked PostgREST/Storage transport. `tests/test_linkedin_client.py` runs the real LinkedIn client against `httpx.MockTransport`.
 
 ## Decisions
 
