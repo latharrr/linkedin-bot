@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import re
 from collections.abc import Callable, Coroutine
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -29,7 +30,9 @@ from app.chat import (
     MIN_TOPIC_CHARS,
     ChatMemory,
     DraftRequest,
+    is_cancel_request,
     is_decline,
+    is_status_query,
     parse_draft_request,
     wants_bot_to_pick,
 )
@@ -173,6 +176,18 @@ def queued_text(which: str | None, when: datetime, single: bool = False) -> str:
     return f"Queued ✓ → {format_ist(when)}" if single else f"Queued ✓ Draft {(which or '?').upper()} → {format_ist(when)}"
 
 
+@dataclass
+class ActiveRun:
+    """One draft generation in flight for a chat. Tracked so a "?" or "cancel" a few
+    minutes later is handled deterministically, instead of asking the chat model to
+    guess — see app.chat.is_status_query / is_cancel_request."""
+
+    brief: str
+    started_at: datetime
+    stage: str = "starting"
+    task: asyncio.Task[Any] | None = field(default=None, repr=False)
+
+
 # ── handler ──────────────────────────────────────────────────────────────────
 class BotHandler:
     def __init__(self, svc: Services, now: Callable[[], datetime] = utcnow) -> None:
@@ -186,11 +201,13 @@ class BotHandler:
         self.memory = ChatMemory()
         self.ideas: dict[int, list[str]] = {}  # last /ideas per chat, for the ✍️ Draft buttons
         self.interviews: dict[int, dict[str, Any]] = {}  # chat → {"qid", "pressed", "skipped", "answered"}
+        self.active_runs: dict[int, ActiveRun] = {}  # chat → the draft generating right now, if any
 
-    def spawn(self, coro: Coroutine[Any, Any, Any]) -> None:
+    def spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         task = asyncio.create_task(coro)
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
+        return task
 
     async def say(self, chat_id: int, text: str, keyboard: Keyboard | None = None) -> None:
         await self.msg.send_text(chat_id, text, keyboard)
@@ -214,8 +231,11 @@ class BotHandler:
     # text ------------------------------------------------------------------------
     async def on_text(self, chat_id: int, raw: str) -> None:
         text = raw.strip()
+        run = self.active_runs.get(chat_id)
         if text.lower() == "/cancel":
             await self.db.clear_chat_state(chat_id)
+            if run is not None:
+                return await self.cancel_run(chat_id, run)
             return await self.say(chat_id, "Cancelled.")
         text = MENU_COMMANDS.get(text, text)  # a tap on the quick menu is a command
         parts = text.split(maxsplit=1)
@@ -226,6 +246,11 @@ class BotHandler:
         state = await self.db.get_chat_state(chat_id, self.now())
         if state is not None:
             return await self.on_state_reply(chat_id, state, text)
+        if run is not None:  # a draft is generating: a check-in or cancel never starts another one
+            if is_cancel_request(text):
+                return await self.cancel_run(chat_id, run)
+            if is_status_query(text):
+                return await self.say(chat_id, self.run_status_text(run))
         if text == "/stats":
             return await self.stats_flow(chat_id)
         request = parse_draft_request(text)
@@ -500,7 +525,8 @@ class BotHandler:
         self.memory.add(chat_id, "user", text)
         try:
             voice = await self.db.get_voice_profile()
-            out = await self.svc.writer.converse(self.memory.history(chat_id), voice)
+            run_status = self.run_status_for_model(self.active_runs.get(chat_id))
+            out = await self.svc.writer.converse(self.memory.history(chat_id), voice, run_status)
         except Exception as exc:
             log.warning("chat_failed", extra={"error": f"{type(exc).__name__}: {exc}"[:200]})
             return await self.say(chat_id, CHAT_DOWN)
@@ -554,16 +580,42 @@ class BotHandler:
                 "If it's an edited draft, your edit window expired: tap Edit again, then resend. "
                 "Otherwise send a shorter brief.",
             )
+        running = self.active_runs.get(chat_id)
+        if running is not None:  # one brief at a time per chat — never start a second run underneath it
+            return await self.say(chat_id, self.run_status_text(running))
         about = f" about:\n{brief}\n\n" if echo else ". "
         await self.say(chat_id, f"On it — researching and writing your post{about}Takes 3–5 minutes.")
-        self.spawn(self._generate(chat_id, brief))
+        run = ActiveRun(brief=brief, started_at=self.now())
+        self.active_runs[chat_id] = run
+        run.task = self.spawn(self._generate(chat_id, brief, run))
 
-    async def _generate(self, chat_id: int, brief: str) -> None:
+    async def _generate(self, chat_id: int, brief: str, run: ActiveRun) -> None:
         try:
-            await run_brief(self.svc, chat_id, brief)
+            await run_brief(self.svc, chat_id, brief, on_stage=lambda s: setattr(run, "stage", s))
         except Exception as exc:
             log.exception("generation_failed")
             await self.say(chat_id, f"Generation failed: {type(exc).__name__}: {str(exc)[:300]}")
+        finally:
+            if self.active_runs.get(chat_id) is run:
+                del self.active_runs[chat_id]
+
+    def run_status_text(self, run: ActiveRun) -> str:
+        mins = max(0, int((self.now() - run.started_at).total_seconds() // 60))
+        elapsed = f"{mins} min ago" if mins else "just now"
+        return f"⏳ Still on it — started {elapsed}, currently {run.stage}. I'll send it here the moment it's ready."
+
+    def run_status_for_model(self, run: ActiveRun | None) -> str | None:
+        if run is None:
+            return None
+        mins = max(0, int((self.now() - run.started_at).total_seconds() // 60))
+        return f'A draft is already running: started {mins} min ago on "{run.brief[:120]}", currently {run.stage}.'
+
+    async def cancel_run(self, chat_id: int, run: ActiveRun) -> None:
+        if run.task is not None:
+            run.task.cancel()
+        if self.active_runs.get(chat_id) is run:
+            del self.active_runs[chat_id]
+        await self.say(chat_id, f'Cancelled — stopped the draft on "{run.brief[:80]}".')
 
     async def _regen(self, post: Post) -> None:
         try:

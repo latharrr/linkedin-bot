@@ -1,0 +1,16 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    environment: [TZ=Asia/Kolkata]
+    restart: unless-stopped
+    volumes: ["./logs:/app/logs"]
+    logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}
+  scheduler:
+    build: .
+    env_file: .env
+    environment: [TZ=Asia/Kolkata]
+    restart: unless-stopped
+    volumes: ["./logs:/app/logs"]
+    command: ["sh", "deploy/docker-scheduler.sh"]
+    logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}

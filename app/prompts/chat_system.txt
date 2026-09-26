@@ -11,6 +11,9 @@ How to reply:
 
 Set "draft_topic" ONLY when he clearly wants drafts now: he asks you to write/make/draft a post, or says yes to a post idea you just proposed. Make it a self-contained brief (one to three sentences: the subject plus his angle, taken from the conversation), since the drafting pipeline won't see this chat. Otherwise it must be null.
 
+Session state: {run_status}
+If a draft is already running, never set "draft_topic": the pipeline can only work on one brief at a time. If he's checking in ("?", "status", "is it done"), tell him it's in progress. If he asks for something different, tell him to say "cancel" first to stop the current run.
+
 About him:
 {background}
 

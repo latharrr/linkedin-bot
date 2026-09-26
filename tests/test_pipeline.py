@@ -29,6 +29,12 @@ async def test_run_brief_inserts_row_and_sends_sequence_in_order(svc, fakes):
     assert m.keyboards() == [draft_tools(post.id, "a"), draft_keyboard(post.id)]
 
 
+async def test_run_brief_reports_stages_in_order(svc, fakes):
+    stages: list[str] = []
+    await run_brief(svc, CHAT_ID, "student founders quitting", on_stage=stages.append)
+    assert stages == ["researching", "outlining", "writing", "making the image", "saving"]
+
+
 async def test_pipeline_step_inputs(svc, fakes):
     fakes["db"].similar = SimilarTopic(id="x", topic="Why student startups die", similarity=0.91)
     await generate(svc, "student founders quitting")

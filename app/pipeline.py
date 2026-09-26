@@ -479,13 +479,16 @@ async def make_images(svc: Services, drafts: dict[str, str], outline: dict[str, 
     return {"a": image, "b": image}
 
 
-async def generate(svc: Services, brief: str) -> Generated:
-    """Steps 1–9, without any writes."""
+async def generate(svc: Services, brief: str, on_stage: Any = None) -> Generated:
+    """Steps 1–9, without any writes. on_stage(name): a coarse progress callback
+    (e.g. for reporting "still researching" to a Telegram chat that asks for status)."""
+    stage = on_stage or (lambda _name: None)
     voice = await load_voice(svc)  # step 4 first: fail fast before paid calls
     stored_brief = brief
     links = await svc.links.read_all(brief) if svc.links else {}
     if links:  # "<url> something on this?": the article is source [1] and the subject
         brief = brief_with_titles(brief, links) + LINK_NOTE
+    stage("researching")
     embedding = await svc.embedder.embed_query(brief)  # a brief is a query
     similar, research, few_shot_rows = await asyncio.gather(
         optional(lambda: svc.db.find_similar_topic(embedding), None, "similar_topic"),  # step 1
@@ -502,13 +505,16 @@ async def generate(svc: Services, brief: str) -> Generated:
     background = [str(f) for f in voice.get("background") or []] + storybank.facts(bank)
     pen = with_bank(writing_voice(voice, stored_brief), bank)
     rules = [f"CLAIM RULE: {r}" for r in voice.get("claim_rules") or []]
+    stage("outlining")
     outline = await grounded_outline(  # step 5 (+ audit: the angle must match his own account)
         svc, brief, format_research(research), recent_topics_text(similar), few_shot, pen, background + rules
     )
     # The author's sourced background facts travel with the row so the number check (and any
     # later preview/regen) treats "15+ tools in 8 weeks" as verified, not invented.
     research = {**research, "outline": outline, "background": background, "claim_rules": [str(r) for r in voice.get("claim_rules") or []]}
+    stage("writing")
     drafts = await write_drafts(svc, brief, outline, research, pen, few_shot)  # 6–7
+    stage("making the image")
     images = await make_images(svc, drafts, outline)  # 9
     log.info("generated", extra={"template": outline["sub_template"], "similar": bool(similar)})
     return Generated(
@@ -572,9 +578,11 @@ async def preview(svc: Services, post: Post) -> None:
     )
 
 
-async def run_brief(svc: Services, chat_id: int, brief: str) -> Post:
+async def run_brief(svc: Services, chat_id: int, brief: str, on_stage: Any = None) -> Post:
     """Full pipeline for a Telegram brief: generate → upload → insert (step 10) → preview (step 11)."""
-    gen = await generate(svc, brief)
+    gen = await generate(svc, brief, on_stage)
+    stage = on_stage or (lambda _name: None)
+    stage("saving")
     post_id = str(uuid.uuid4())
     urls = await upload_images(svc, post_id, gen.images)
     post = await svc.db.insert_post(

@@ -42,6 +42,15 @@ _DECLINE = re.compile(
     re.IGNORECASE,
 )
 
+# Checked only while a draft run is in progress (see BotHandler.active_runs), so this
+# never shadows unrelated chat like "what's the status of AI regulation".
+_STATUS_QUERY = re.compile(
+    r"^(?:\?+|status\??|any\s+update\??|is\s+it\s+(?:done|ready)\??|how'?s?\s+it\s+going\??|"
+    r"where'?s?(?:\s+is)?\s+(?:my|the)\s+draft\??|done\s+yet\??|progress\??)[\s.!]*$",
+    re.IGNORECASE,
+)
+_CANCEL_REQUEST = re.compile(r"^(?:cancel|stop|abort|never\s*mind|forget\s+it)\b[\s.!]*$", re.IGNORECASE)
+
 
 @dataclass(frozen=True)
 class DraftRequest:
@@ -89,3 +98,13 @@ class ChatMemory:
 def is_decline(text: str) -> bool:
     """"not today", "skip", "no thanks" in reply to "what should the post be about?"."""
     return bool(_DECLINE.match(text.strip()))
+
+
+def is_status_query(text: str) -> bool:
+    """"?", "status?", "is it done?", "where's my draft?" — a check-in, not a new request."""
+    return bool(_STATUS_QUERY.match(text.strip()))
+
+
+def is_cancel_request(text: str) -> bool:
+    """"cancel", "stop", "never mind" while a run is in progress."""
+    return bool(_CANCEL_REQUEST.match(text.strip()))

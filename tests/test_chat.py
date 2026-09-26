@@ -1,6 +1,7 @@
 """Conversation mode: post requests vs chat, the topic prompt, and the 8am-nudge reply."""
 
 import asyncio
+import contextlib
 from datetime import UTC, datetime
 
 import pytest
@@ -164,6 +165,53 @@ async def test_chat_never_publishes(h, fakes):
     fakes["nvidia"].chat_reply = {"reply": "Use the buttons under the drafts: pick A or B, then a time.", "draft_topic": None}
     await h.on_text(CHAT_ID, "post A now")
     assert fakes["db"].posts[post.id]["status"] == "awaiting_choice" and fakes["db"].posts[post.id].get("chosen") is None
+
+
+# ── active-run session state (a draft in flight has priority over new requests) ──────────
+@pytest.mark.parametrize("text", ["?", "status?", "is it done?", "where's my draft?", "any update?"])
+async def test_status_query_during_active_run_reports_status_not_a_new_draft(h, fakes, text):
+    await h.on_text(CHAT_ID, "make a post about RAG in Indian startups")
+    await h.on_text(CHAT_ID, text)
+    assert fakes["messenger"].texts()[-1].startswith("⏳ Still on it — started")
+    await drain(h)
+    assert len(fakes["db"].posts) == 1  # the status check never started a second run
+
+
+async def test_new_draft_request_during_active_run_does_not_start_a_second_run(h, fakes):
+    await h.on_text(CHAT_ID, "make a post about RAG in Indian startups")
+    await h.on_text(CHAT_ID, "make a post about pricing pages")
+    assert fakes["messenger"].texts()[-1].startswith("⏳ Still on it — started")
+    await drain(h)
+    assert len(fakes["db"].posts) == 1
+    assert next(iter(fakes["db"].posts.values()))["brief"] == "RAG in Indian startups"
+
+
+@pytest.mark.parametrize("text", ["cancel", "stop", "/cancel"])
+async def test_cancel_during_active_run_stops_it_and_confirms(h, fakes, text):
+    await h.on_text(CHAT_ID, "make a post about RAG in Indian startups")
+    run = h.active_runs[CHAT_ID]
+    await h.on_text(CHAT_ID, text)
+    assert CHAT_ID not in h.active_runs
+    assert fakes["messenger"].texts()[-1] == 'Cancelled — stopped the draft on "RAG in Indian startups".'
+    with contextlib.suppress(asyncio.CancelledError):
+        await run.task
+    assert fakes["db"].posts == {}  # cancelled before it could write anything
+
+
+async def test_chat_model_is_told_a_draft_is_already_running(h, fakes):
+    await h.on_text(CHAT_ID, "make a post about RAG in Indian startups")
+    await h.on_text(CHAT_ID, "what about eval costs instead?")
+    system = fakes["nvidia"].chat_calls[-1]["messages"][0]["content"]
+    assert "A draft is already running" in system and "RAG in Indian startups" in system
+    await drain(h)
+    assert len(fakes["db"].posts) == 1
+
+
+async def test_active_run_clears_once_generation_finishes(h, fakes):
+    await h.on_text(CHAT_ID, "make a post about RAG in Indian startups")
+    assert CHAT_ID in h.active_runs
+    await drain(h)
+    assert CHAT_ID not in h.active_runs
 
 
 # ── Jev second opinion ───────────────────────────────────────────────────────

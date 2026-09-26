@@ -411,14 +411,20 @@ class Writer:
             raise WriterError("image scene too short")
         return scenes[:2]
 
-    async def converse(self, history: list[dict[str, str]], voice: dict[str, Any] | None) -> dict[str, Any]:
+    async def converse(
+        self, history: list[dict[str, str]], voice: dict[str, Any] | None, run_status: str | None = None
+    ) -> dict[str, Any]:
         """Chat reply → {"reply": str, "draft_topic": str | None}. A reply that isn't the
-        requested JSON is still shown as chat, and never starts a draft."""
+        requested JSON is still shown as chat, and never starts a draft.
+
+        run_status: session state (is a draft already running, which stage, since when) so
+        the model reports status or explains a run is in progress instead of guessing."""
         voice = voice or {}
         system = render(
             load_prompt("chat_system"),
             background="\n".join(f"- {f}" for f in voice.get("background") or []) or "(not loaded)",
             claim_rules="\n".join(f"- {r}" for r in voice.get("claim_rules") or []) or "(none)",
+            run_status=run_status or "No draft is currently running.",
         )
         result = await self._client.chat(self._model, [{"role": "system", "content": system}, *history], max_tokens=1024)
         text = (result.text or "").strip()
