@@ -94,7 +94,8 @@ HELP = (
     "Talk to me normally. When you want a post, say so:\n"
     "• make a post about <topic>   • draft: <topic>\n"
     "• paste a link + \"something on this?\"\n"
-    "• make a post — I'll ask what about (\"you pick\" = today's news)\n\n"
+    "• make a post — I'll ask what about (\"you pick\" = today's news)\n"
+    "Or just ask: \"what's queued\", \"any drafts waiting\", \"how's usage looking\", \"what should I post about\".\n\n"
     "I research it with every source (Groq browsing, Bright Data, Tavily, NewsData), write\n"
     "two versions behind the scenes, and send you ONE final post with one image. Under it:\n"
     "✂️ Shorter · 🎣 New hook · 🔥 Bolder · ✅ Post this · ✏️ Edit\n"
@@ -307,6 +308,23 @@ class BotHandler:
                 made = format_ist(post.created_at) if post.created_at else ""
                 await self.say(chat_id, f"📝 {(post.topic or post.brief)[:140]}\n{made}", waiting_keyboard(post.id))
 
+    async def posts_tool_text(self, chat_id: int, status: str) -> str:
+        """Same data as /drafts or /queue, as one plain-text digest for the chat tool
+        loop — no per-post buttons, since those only make sense in the direct command."""
+        posts = await self.db.posts_with_status(chat_id, status, 5)  # type: ignore[arg-type]
+        if not posts:
+            return "No drafts waiting." if status == "awaiting_choice" else "Nothing scheduled."
+        lines = []
+        for post in posts:
+            if status == "queued":
+                first = (post.draft(post.chosen or "a").strip().splitlines() or [""])[0][:90]
+                when = format_ist(post.scheduled_at) if post.scheduled_at else "?"
+                lines.append(f"- {when} — Draft {(post.chosen or '?').upper()}: {first}")
+            else:
+                made = format_ist(post.created_at) if post.created_at else ""
+                lines.append(f"- {(post.topic or post.brief)[:140]} ({made})")
+        return "\n".join(lines)
+
     # comments on other people's posts (idea from sergebulaev/linkedin-skills) ---------------
     async def comment_flow(self, chat_id: int, source: str) -> None:
         """Two comment drafts to copy. The bot never posts comments."""
@@ -446,19 +464,23 @@ class BotHandler:
         buttons = [[("🔄 Refresh", "status:refresh"), ("📅 Queue", "menu:/queue")], [("📝 Drafts", "menu:/drafts"), ("✍️ New post", "menu:/new")]]
         await self.say(chat_id, await self.status_text(chat_id), buttons)
 
-    async def ideas_flow(self, chat_id: int) -> None:
-        """Three fresh headlines (one per niche keyword), each with a ✍️ Draft button."""
+    async def _fetch_ideas(self) -> list[str]:
         keywords = self.svc.settings.keywords
         if not keywords:
-            return await self.say(chat_id, "Set NICHE_KEYWORDS in .env first, e.g. AI agents,startup,developer tools.")
-        await self.say(chat_id, "💡 Finding fresh ideas…")
+            return []
         day = self.now().astimezone(IST).toordinal()
         picks = [keywords[(day + i) % len(keywords)] for i in range(min(IDEAS, len(keywords)))]
         if self.svc.news is not None:
             found = await asyncio.gather(*(self.svc.news.topic(k) for k in picks), return_exceptions=True)
-            topics = [t for t in found if isinstance(t, str)]
-        else:  # one call only: the fallback sources cost research tokens
-            topics = [t for t in [await self.svc.researcher.news_topic(keywords, day)] if t]
+            return [t for t in found if isinstance(t, str)]
+        return [t for t in [await self.svc.researcher.news_topic(keywords, day)] if t]  # one call only: costs research tokens
+
+    async def ideas_flow(self, chat_id: int) -> None:
+        """Three fresh headlines (one per niche keyword), each with a ✍️ Draft button."""
+        if not self.svc.settings.keywords:
+            return await self.say(chat_id, "Set NICHE_KEYWORDS in .env first, e.g. AI agents,startup,developer tools.")
+        await self.say(chat_id, "💡 Finding fresh ideas…")
+        topics = await self._fetch_ideas()
         if not topics:
             return await self.say(chat_id, "No fresh ideas right now. Send me a topic instead.")
         self.ideas[chat_id] = topics
@@ -466,18 +488,35 @@ class BotHandler:
         buttons = [[(f"✍️ Draft {i}", f"idea:{i}") for i in range(1, len(topics) + 1)]]
         await self.say(chat_id, "💡 Ideas from today's news:\n\n" + "\n\n".join(lines), buttons)
 
+    async def ideas_tool_text(self) -> str:
+        if not self.svc.settings.keywords:
+            return "No niche keywords configured (NICHE_KEYWORDS in .env)."
+        topics = await self._fetch_ideas()
+        if not topics:
+            return "No fresh ideas right now."
+        return "\n".join(f"{i}. {t.split(' (niche:', 1)[0][:260]}" for i, t in enumerate(topics, 1))
+
+    async def _collect_usage(self) -> dict[str, Any]:
+        from app.usage import collect
+
+        if self.svc.http is not None:
+            return await collect(self.svc.settings, self.db, self.svc.http)
+        async with httpx.AsyncClient() as http:
+            return await collect(self.svc.settings, self.db, http)
+
     async def dashboard_flow(self, chat_id: int) -> None:
-        from app.usage import cards_text, collect
+        from app.usage import cards_text
 
         await self.say(chat_id, await self.status_text(chat_id))  # posts first: "is it posted?"
         await self.say(chat_id, "📊 Checking every API…")
-        if self.svc.http is not None:
-            data = await collect(self.svc.settings, self.db, self.svc.http)
-        else:
-            async with httpx.AsyncClient() as http:
-                data = await collect(self.svc.settings, self.db, http)
+        data = await self._collect_usage()
         for part in cards_text(data):
             await self.say(chat_id, part)
+
+    async def dashboard_tool_text(self) -> str:
+        from app.usage import cards_text
+
+        return "\n\n".join(cards_text(await self._collect_usage()))
 
     # conversation ------------------------------------------------------------------
     async def on_draft_request(self, chat_id: int, text: str, request: DraftRequest) -> None:
@@ -526,7 +565,14 @@ class BotHandler:
         try:
             voice = await self.db.get_voice_profile()
             run_status = self.run_status_for_model(self.active_runs.get(chat_id))
-            out = await self.svc.writer.converse(self.memory.history(chat_id), voice, run_status)
+            tools = {
+                "status": lambda: self.status_text(chat_id),
+                "queue": lambda: self.posts_tool_text(chat_id, "queued"),
+                "drafts": lambda: self.posts_tool_text(chat_id, "awaiting_choice"),
+                "dashboard": self.dashboard_tool_text,
+                "ideas": self.ideas_tool_text,
+            }
+            out = await self.svc.writer.converse(self.memory.history(chat_id), voice, run_status, tools)
         except Exception as exc:
             log.warning("chat_failed", extra={"error": f"{type(exc).__name__}: {exc}"[:200]})
             return await self.say(chat_id, CHAT_DOWN)

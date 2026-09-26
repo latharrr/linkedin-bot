@@ -2,7 +2,7 @@
 
 import asyncio
 import contextlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -241,6 +241,44 @@ async def test_jev_yes_or_unavailable_lets_the_run_start(h, fakes, p):
     await h.on_text(CHAT_ID, "yes go for it")
     await drain(h)
     assert len(fakes["db"].posts) == 1
+
+
+# ── chat tools (read-only agent loop) ───────────────────────────────────────
+async def test_chat_can_answer_whats_queued_from_live_data(h, fakes):
+    fakes["db"].add_post(status="queued", chosen="a", scheduled_at=NOW + timedelta(hours=2), draft_a="Your dashboard screams downloads.\n\nBody")
+    fakes["nvidia"].chat_reply = [
+        {"reply": "", "draft_topic": None, "tool_call": "queue"},
+        {"reply": "One post queued for later today.", "draft_topic": None, "tool_call": None},
+    ]
+    await h.on_text(CHAT_ID, "what's queued?")
+    assert fakes["messenger"].texts() == ["One post queued for later today."]
+    assert len(fakes["nvidia"].chat_calls) == 2
+    second_call_text = fakes["nvidia"].chat_calls[1]["messages"][-1]["content"]
+    assert "[queue result]" in second_call_text and "Your dashboard screams downloads." in second_call_text
+
+
+async def test_chat_tool_call_never_starts_or_touches_a_draft(h, fakes):
+    fakes["nvidia"].chat_reply = [
+        {"reply": "", "draft_topic": None, "tool_call": "drafts"},
+        {"reply": "Nothing waiting on you right now.", "draft_topic": None, "tool_call": None},
+    ]
+    await h.on_text(CHAT_ID, "any drafts waiting?")
+    assert fakes["messenger"].texts() == ["Nothing waiting on you right now."]
+    assert fakes["db"].posts == {}
+
+
+async def test_chat_unknown_tool_name_is_ignored_not_looped(h, fakes):
+    fakes["nvidia"].chat_reply = {"reply": "Not sure what you mean.", "draft_topic": None, "tool_call": "delete_everything"}
+    await h.on_text(CHAT_ID, "do something weird")
+    assert fakes["messenger"].texts() == ["Not sure what you mean."]
+    assert len(fakes["nvidia"].chat_calls) == 1  # no tool named "delete_everything" exists, so it never loops
+
+
+async def test_chat_tool_loop_is_capped_not_infinite(h, fakes):
+    fakes["nvidia"].chat_reply = [{"reply": "", "draft_topic": None, "tool_call": "status"}]  # always asks for another lookup
+    await h.on_text(CHAT_ID, "how's it going")
+    assert len(fakes["nvidia"].chat_calls) == 3  # MAX_TOOL_ROUNDS, not unbounded
+    assert fakes["messenger"].texts() == ["That took a couple of lookups too many — ask me again?"]
 
 
 async def test_explicit_requests_skip_jev(h, fakes):

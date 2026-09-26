@@ -21,7 +21,7 @@ log = get_logger(__name__)
 
 RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 MAX_BACKOFF = 30.0
-MAX_MINUTE_WAIT = 65.0  # a per-minute window always clears within a minute
+MAX_MINUTE_WAIT = 65.0  # default cap; a per-minute window always clears within a minute
 _PER_MINUTE = re.compile(r"per minute|\bTPM\b|\bRPM\b", re.I)
 
 # Reasoning models may prepend their chain of thought in <think> tags.
@@ -52,8 +52,8 @@ def _per_minute(resp: httpx.Response) -> bool:
     return resp.status_code == 429 and bool(_PER_MINUTE.search(resp.text))
 
 
-def _retry_after(resp: httpx.Response, attempt: int) -> float:
-    cap = MAX_MINUTE_WAIT if _per_minute(resp) else MAX_BACKOFF
+def _retry_after(resp: httpx.Response, attempt: int, minute_wait_cap: float = MAX_MINUTE_WAIT) -> float:
+    cap = minute_wait_cap if _per_minute(resp) else MAX_BACKOFF
     try:
         return min(float(resp.headers.get("retry-after", "")), cap)
     except ValueError:
@@ -84,11 +84,13 @@ class ApiClient:
         http: httpx.AsyncClient,
         *,
         max_attempts: int = 3,
+        minute_wait_cap: float = MAX_MINUTE_WAIT,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._key = api_key
         self._http = http
         self._max_attempts = max_attempts
+        self._minute_wait_cap = minute_wait_cap
         self._sleep = sleep
 
     async def _post(self, url: str, body: dict[str, Any], timeout: float) -> dict[str, Any]:
@@ -110,7 +112,7 @@ class ApiClient:
             self._record(what, body, resp)
             if resp.status_code in RETRY_STATUS and not last and not _long_wait(resp):
                 log.warning("api_retry", extra={"endpoint": what, "status": resp.status_code, "attempt": attempt + 1})
-                await self._sleep(_retry_after(resp, attempt))
+                await self._sleep(_retry_after(resp, attempt, self._minute_wait_cap))
                 continue
             if resp.status_code >= 400:
                 raise self.error_cls(f"{what}: HTTP {resp.status_code}: {resp.text[:300]}", resp.status_code)

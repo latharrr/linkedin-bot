@@ -258,6 +258,40 @@ async def test_dashboard_command_sends_usage(h, fakes, monkeypatch):
     assert "🟡 Groq — Writer" in texts[2] and "150,000 / 200,000 tokens (75%) · 50,000 left" in texts[2]
 
 
+async def test_dashboard_tool_text_has_no_extra_status_or_progress_lines(h, fakes, monkeypatch):
+    """Unlike /dashboard, the chat-tool version is just the usage cards: the model already
+    has a separate "status" tool for "is it posted?", and there's no chat to send progress to."""
+
+    async def fake_collect(settings, db, http, now=None):
+        return {"generated_at": "2026-09-23T08:22:00", "cards": [
+            {"id": "groq", "name": "Groq", "role": "Writer", "status": "ok", "meters": [], "facts": []},
+        ]}
+
+    monkeypatch.setattr("app.usage.collect", fake_collect)
+    text = await h.dashboard_tool_text()
+    assert "🟢 Groq — Writer" in text and "📋 Status" not in text and "Checking every API" not in text
+
+
+async def test_ideas_tool_text_lists_topics_without_niche_tag_or_buttons(h, fakes, monkeypatch):
+    monkeypatch.setattr(h.svc.settings, "niche_keywords", "AI agents,startup")
+    h.svc.news = FakeNews({"AI agents": "Why Everyone Is Talking About Jev (niche: AI agents; source: https://forbes.com/jev)"})
+    text = await h.ideas_tool_text()
+    assert text == "1. Why Everyone Is Talking About Jev" and CHAT_ID not in h.ideas
+
+
+async def test_ideas_tool_text_without_keywords_configured(h, fakes, monkeypatch):
+    monkeypatch.setattr(h.svc.settings, "niche_keywords", "")
+    assert "NICHE_KEYWORDS" in await h.ideas_tool_text()
+
+
+async def test_posts_tool_text_matches_the_queue_and_drafts_commands(h, fakes):
+    assert await h.posts_tool_text(CHAT_ID, "queued") == "Nothing scheduled."
+    assert await h.posts_tool_text(CHAT_ID, "awaiting_choice") == "No drafts waiting."
+    post = fakes["db"].add_post(status="queued", chosen="a", scheduled_at=NOW + timedelta(hours=1), draft_a="A sharp hook.\n\nBody")
+    text = await h.posts_tool_text(CHAT_ID, "queued")
+    assert text.startswith("- ") and "Draft A: A sharp hook." in text and str(post.id) not in text  # no internal ids leak into chat
+
+
 # ── dashboard text ───────────────────────────────────────────────────────────
 def test_meter_line_formats_storage_in_mb():
     line = meter_line({"label": "Image storage", "used": 2 * 1_048_576, "limit": 1024 * 1_048_576, "unit": "bytes"})

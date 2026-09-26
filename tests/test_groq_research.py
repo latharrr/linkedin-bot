@@ -76,7 +76,9 @@ async def test_groq_retries_429_then_errors_cleanly():
     client = GroqClient("gsk-secret", httpx.AsyncClient(transport=httpx.MockTransport(handler)), chat_timeout=1, browse_timeout=1, sleep=no_sleep)
     with pytest.raises(GroqError) as exc:
         await client.chat("m", [])
-    assert len(calls) == 6 and exc.value.status == 429 and "gsk-secret" not in str(exc.value)  # patient on 429s
+    # One retry only: a busier pipeline needs the fallback chain (groq2, then others)
+    # to take over quickly instead of this client blocking on its own for minutes.
+    assert len(calls) == 2 and exc.value.status == 429 and "gsk-secret" not in str(exc.value)
 
 
 async def test_groq_calls_are_serialised():

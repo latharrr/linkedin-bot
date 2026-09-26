@@ -81,6 +81,7 @@ class FakeNvidia:
         self.browse_tools: list[dict[str, Any]] = []
         self.browse_status = 200
         self.chat_reply: Any = {"reply": "Happy to help. What's on your mind?", "draft_topic": None}
+        self._converse_calls = 0  # lets chat_reply be a list: one entry per converse() round trip
         self.chat_calls_history: list[list[dict[str, str]]] = []
         self.tune_reply: str | None = None
         self.unsupported: list[str] = []
@@ -117,7 +118,11 @@ class FakeNvidia:
         user = user_text(body)
         if "Telegram assistant inside" in system_text(body):
             self.chat_calls_history.append(body["messages"][1:])
-            text = self.chat_reply if isinstance(self.chat_reply, str) else json.dumps(self.chat_reply)
+            reply = self.chat_reply
+            if isinstance(reply, list):  # a scripted sequence: one entry per tool-loop round trip
+                reply = reply[min(self._converse_calls, len(reply) - 1)]
+            self._converse_calls += 1
+            text = reply if isinstance(reply, str) else json.dumps(reply)
         elif user.startswith("You draft comments that Deepanshu Lathar will post"):
             self.comment_prompts.append(user)
             text = json.dumps({"comments": [

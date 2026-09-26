@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from collections.abc import Awaitable, Callable
 from functools import cache
 from pathlib import Path
 from typing import Any, Protocol
@@ -56,6 +57,8 @@ EDIT_TEMPERATURE = 0.2
 ROLE_A = "story / founder-POV"
 ROLE_B = "contrarian / insight-list"
 _PLACEHOLDER = re.compile(r"\{(\w+)\}")
+MAX_TOOL_ROUNDS = 3  # one tool call needs 2 model calls (fetch, then answer); a small margin for a second lookup
+ToolFn = Callable[[], Awaitable[str]]
 
 
 class WriterError(RuntimeError):
@@ -412,13 +415,22 @@ class Writer:
         return scenes[:2]
 
     async def converse(
-        self, history: list[dict[str, str]], voice: dict[str, Any] | None, run_status: str | None = None
+        self,
+        history: list[dict[str, str]],
+        voice: dict[str, Any] | None,
+        run_status: str | None = None,
+        tools: dict[str, ToolFn] | None = None,
     ) -> dict[str, Any]:
         """Chat reply → {"reply": str, "draft_topic": str | None}. A reply that isn't the
         requested JSON is still shown as chat, and never starts a draft.
 
         run_status: session state (is a draft already running, which stage, since when) so
-        the model reports status or explains a run is in progress instead of guessing."""
+        the model reports status or explains a run is in progress instead of guessing.
+
+        tools: read-only lookups (status, queue, drafts, dashboard, ideas — see bot.py) the
+        model can call by name instead of guessing. Never anything that changes state: chat
+        only ever proposes a draft_topic, it doesn't start the run itself (bot.py does, and
+        only after the Jev gate). Each round trip is one extra model call, so this is capped."""
         voice = voice or {}
         system = render(
             load_prompt("chat_system"),
@@ -426,17 +438,30 @@ class Writer:
             claim_rules="\n".join(f"- {r}" for r in voice.get("claim_rules") or []) or "(none)",
             run_status=run_status or "No draft is currently running.",
         )
-        result = await self._client.chat(self._model, [{"role": "system", "content": system}, *history], max_tokens=1024)
-        text = (result.text or "").strip()
-        if not text:
-            raise WriterError(f"{self._model} returned no text")
-        try:
-            data = parse_json_object(text)
-        except WriterError:
-            return {"reply": text, "draft_topic": None}
-        topic = data.get("draft_topic")
-        reply = str(data.get("reply") or "").strip()
-        return {"reply": reply, "draft_topic": topic.strip() if isinstance(topic, str) and topic.strip() else None}
+        messages = [{"role": "system", "content": system}, *history]
+        for _ in range(MAX_TOOL_ROUNDS):
+            result = await self._client.chat(self._model, messages, max_tokens=1024)
+            text = (result.text or "").strip()
+            if not text:
+                raise WriterError(f"{self._model} returned no text")
+            try:
+                data = parse_json_object(text)
+            except WriterError:
+                return {"reply": text, "draft_topic": None}
+            call = data.get("tool_call")
+            tool = tools.get(call) if tools and isinstance(call, str) else None
+            if tool is not None:
+                log.info("chat_tool_call", extra={"tool": call})
+                outcome = await tool()
+                messages += [
+                    {"role": "assistant", "content": text},
+                    {"role": "user", "content": f"[{call} result]\n{outcome}\n\nNow answer him using this, in the same JSON format."},
+                ]
+                continue
+            topic = data.get("draft_topic")
+            reply = str(data.get("reply") or "").strip()
+            return {"reply": reply, "draft_topic": topic.strip() if isinstance(topic, str) and topic.strip() else None}
+        return {"reply": "That took a couple of lookups too many — ask me again?", "draft_topic": None}
 
     async def extract_voice(self, posts: list[str]) -> dict[str, Any]:
         prompt = render(load_prompt("voice_extraction"), posts="\n\n---\n\n".join(posts))

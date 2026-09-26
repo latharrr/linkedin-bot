@@ -6,8 +6,17 @@ keep reasoning short and out of the response (verified 2026-09-23).
 
 Free tier: gpt-oss-120b allows 8,000 tokens/minute and a writing call is
 ~1.2–2.5k tokens, so parallel calls trip 429s. Calls are serialised (Groq
-answers in ~1 s, so this costs little) and 429s are waited out patiently,
-honouring Groq's retry-after.
+answers in ~1 s, so this costs little). A 429 gets ONE short retry (a few
+seconds, not a full per-minute window) — then it's the fallback chain's job
+(app/openrouter.FallbackChat, app/research.FailoverBrowser) to move on to
+GROQ_API_KEY_2 or the next provider rather than blocking here. This client used
+to wait out full per-minute windows across up to 6 attempts; that made every
+busy pipeline run stall for minutes before the paid fallback account ever got a
+turn (see fallback.log 2026-09-26 08:32–08:39 for a live example: ~7 minutes
+for one draft, almost all of it spent sleeping on 429s it eventually beat
+anyway). NVIDIA (app/nvidia.py) keeps the old patient behaviour: it sits at the
+tail of the chain or runs standalone, so there's nothing better to fail over
+to.
 """
 
 from __future__ import annotations
@@ -71,7 +80,8 @@ class GroqClient(ApiClient):
         max_concurrency: int = 1,
         **kwargs: Any,
     ) -> None:
-        kwargs.setdefault("max_attempts", 6)
+        kwargs.setdefault("max_attempts", 2)  # one retry, then let the fallback chain take over
+        kwargs.setdefault("minute_wait_cap", 8.0)  # short courtesy wait, not a full minute
         super().__init__(api_key, http, **kwargs)
         self._gate = asyncio.Semaphore(max_concurrency)
         self._chat_timeout = chat_timeout
