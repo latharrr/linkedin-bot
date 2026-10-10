@@ -546,3 +546,8 @@ Run the tests with:
 - Optionally add a CHECK constraint on `chat_state.pending_action`. It was kept out to match SPEC §4 exactly.
 - Optionally hold Telegram "Posted/failed" alerts in a retry queue if Telegram itself is down. Right now a send failure is only logged.
 - If voice quality drifts: re-seed, run `extract_voice.py` again, and review `past_posts` rows with `source='ai'`.
+
+## 2026-10-10 P0+P1 deployed (commit 9a0d7a6)
+- Writer chain: groq2 paid primary, claude-haiku-5-5 (Anthropic) prepended as strong writer; key in .env via Instinct vault.
+- Cleaned 4 junk story-bank entries; discarded 2 stale Sep drafts; no-repeat now counts drafted/generated stories.
+- Redeployed ~16:57 UTC, bot+scheduler healthy. Push to origin pending (code-server GitHub auth wedged); full backup bundle at /opt/automations/linkedin-bot-backup-20261010.bundle.
