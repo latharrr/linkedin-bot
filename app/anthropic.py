@@ -55,8 +55,7 @@ class AnthropicClient(ApiClient):
         body: dict[str, Any] = {"model": model, "messages": turns, "max_tokens": max_tokens}
         if system:
             body["system"] = system
-        if temperature is not None:
-            body["temperature"] = temperature
+        # Haiku 5.5 rejects temperature/top_p/top_k (HTTP 400), so sampling params are never sent.
         data = await self._post(MESSAGES_URL, body, self._chat_timeout)
         try:
             text = "".join(block.get("text", "") for block in data["content"] if block.get("type") == "text")
