@@ -7,12 +7,13 @@ never posts or schedules anything: drafts still need a human pick AND a time.
 
 from __future__ import annotations
 
+import json
 import re
 from collections import deque
 from dataclasses import dataclass
 
 MIN_TOPIC_CHARS = 3  # "RAG" is a fine topic when the request is explicit
-HISTORY_TURNS = 12  # messages kept per chat (user + assistant), in memory only
+HISTORY_TURNS = 12  # messages kept per chat (user + assistant), persisted to settings
 
 _POLITE = r"(?:(?:hey|hi|ok|okay|please|pls|so|now|can\s+you|could\s+you|would\s+you|let'?s|go\s+ahead\s+and)[\s,]+)*"
 _VERB = r"(?:make|write|draft|create|generate|prepare|craft|do|start|give\s+me)"
@@ -87,20 +88,52 @@ def wants_bot_to_pick(text: str) -> bool:
 
 class ChatMemory:
     """Last few messages per chat so "draft that" and "yes, do it" have context.
-    In memory only: a bot restart forgets the conversation, never any post state."""
+    The bot persists snapshots to settings (chat_history:<chat_id>): a restart
+    keeps the conversation, never any post state."""
 
     def __init__(self, turns: int = HISTORY_TURNS) -> None:
         self._turns = turns
         self._chats: dict[int, deque[dict[str, str]]] = {}
+        self._dirty: set[int] = set()  # chats with turns not yet saved
 
     def add(self, chat_id: int, role: str, content: str) -> None:
         self._chats.setdefault(chat_id, deque(maxlen=self._turns)).append({"role": role, "content": content})
+        self._dirty.add(chat_id)
 
     def history(self, chat_id: int) -> list[dict[str, str]]:
         return list(self._chats.get(chat_id, ()))
 
     def has_context(self, chat_id: int) -> bool:
         return bool(self._chats.get(chat_id))
+
+    def snapshot(self, chat_id: int) -> str:
+        """JSON of the current window, for the settings table."""
+        return json.dumps(self.history(chat_id))
+
+    def load(self, chat_id: int, raw: str) -> bool:
+        """Restore a snapshot. Returns False on anything unexpected."""
+        try:
+            msgs = json.loads(raw)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(msgs, list):
+            return False
+        valid = [
+            {"role": m["role"], "content": m["content"]}
+            for m in msgs
+            if isinstance(m, dict) and m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)
+        ]
+        if not valid:
+            return False
+        self._chats[chat_id] = deque(valid[-self._turns :], maxlen=self._turns)
+        self._dirty.discard(chat_id)
+        return True
+
+    def dirty_chats(self) -> list[int]:
+        return list(self._dirty)
+
+    def mark_saved(self, chat_id: int) -> None:
+        self._dirty.discard(chat_id)
 
 
 def is_decline(text: str) -> bool:

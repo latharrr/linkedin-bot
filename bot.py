@@ -394,6 +394,27 @@ class BotHandler:
         task.add_done_callback(self.tasks.discard)
         return task
 
+    async def restore_memory(self) -> None:
+        """Load the persisted chat window at startup. Failure never blocks boot."""
+        chat_id = self.svc.settings.my_chat_id
+        try:
+            raw = await self.db.get_setting(f"chat_history:{chat_id}")
+        except Exception:
+            log.warning("chat_history_load_failed")
+            return
+        if raw and self.memory.load(chat_id, raw):
+            log.info("chat_history_restored")
+
+    async def flush_memory(self, chat_id: int) -> None:
+        """Write the chat window back to settings after an update is handled."""
+        if chat_id not in self.memory.dirty_chats():
+            return
+        try:
+            await self.db.set_setting(f"chat_history:{chat_id}", self.memory.snapshot(chat_id))
+            self.memory.mark_saved(chat_id)
+        except Exception:
+            log.warning("chat_history_save_failed")
+
     async def say(self, chat_id: int, text: str, keyboard: Keyboard | None = None) -> None:
         await self.msg.send_text(chat_id, text, keyboard)
 
@@ -412,6 +433,8 @@ class BotHandler:
         except Exception:
             log.exception("update_failed")
             await self.say(chat.id, "Something went wrong handling that. Check the bot logs.")
+        finally:
+            await self.flush_memory(chat.id)
 
     # text ------------------------------------------------------------------------
     async def on_text(self, chat_id: int, raw: str) -> None:
@@ -1650,7 +1673,9 @@ async def run_cron(mode: str, settings: Settings) -> None:
 def run_polling(settings: Settings) -> None:
     async def post_init(app: Application) -> None:
         svc = await build_services(settings, TelegramMessenger(app.bot))
-        app.bot_data["handler"] = BotHandler(svc)
+        handler = BotHandler(svc)
+        await handler.restore_memory()
+        app.bot_data["handler"] = handler
         try:  # the "/" menu in Telegram
             await app.bot.set_my_commands([BotCommand(c, d) for c, d in BOT_COMMANDS])
         except Exception:
