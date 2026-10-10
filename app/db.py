@@ -240,8 +240,10 @@ class Database:
         return [Post(**r) for r in res.data or []]
 
     async def recent_posts(self, since: datetime) -> list[Post]:
-        """Posts that went out or are scheduled, made since `since` (the no-repeat window)."""
-        q = self._c.table("posts").select(POST_COLUMNS).in_("status", ["posted", "queued", "posting"]).gte("created_at", _iso(since))
+        """Every post made since `since` (the no-repeat window): published, queued AND
+        shown-but-discarded drafts. A story he was already shown is a repeat even when he
+        never published it."""
+        q = self._c.table("posts").select(POST_COLUMNS).gte("created_at", _iso(since))
         res = await q.order("created_at", desc=True).limit(30).execute()
         return [Post(**r) for r in res.data or []]
 

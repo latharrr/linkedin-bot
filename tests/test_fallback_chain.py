@@ -160,7 +160,8 @@ def settings(**kw) -> Settings:
 def test_links_skip_providers_without_keys_and_dedupe():
     clients = {"groq": object(), "openrouter": object(), "nvidia": object()}  # no modelscope / zenmux key
     links = writer_links(settings(), clients)
-    assert (links[0].provider, links[0].model) == ("groq", "openai/gpt-oss-120b")
+    # the paid groq2 primary is skipped without its key: the free account's smaller models lead what's left
+    assert (links[0].provider, links[0].model) == ("groq", "openai/gpt-oss-20b")
     assert {link.provider for link in links} == {"groq", "openrouter", "nvidia"}
     labels = [(link.provider, link.model) for link in links]
     assert len(labels) == len(set(labels))
@@ -174,10 +175,10 @@ def test_primary_is_not_repeated_when_also_in_fallbacks():
 
 def test_build_writer_uses_plain_client_when_no_fallbacks():
     client = object()
-    w = build_writer(settings(writer_fallbacks=""), {"groq": client})
+    w = build_writer(settings(writer_provider="groq", writer_fallbacks=""), {"groq": client})
     assert w._client is client and w._model == "openai/gpt-oss-120b"
-    w2 = build_writer(settings(), {"groq": client, "openrouter": object()})
-    assert isinstance(w2._client, FallbackChat) and w2._model.startswith("chain(groq:openai/gpt-oss-120b+")
+    w2 = build_writer(settings(), {"groq": client, "groq2": client, "openrouter": object()})
+    assert isinstance(w2._client, FallbackChat) and w2._model.startswith("chain(groq2:openai/gpt-oss-120b+")
 
 
 @pytest.mark.parametrize(
@@ -186,6 +187,8 @@ def test_build_writer_uses_plain_client_when_no_fallbacks():
         ({"writer_provider": "openrouter"}, "OPENROUTER_API_KEY"),
         ({"writer_provider": "modelscope"}, "MODELSCOPE_API_KEY"),
         ({"writer_provider": "zenmux"}, "ZENMUX_API_KEY"),
+        ({"writer_provider": "groq2"}, "GROQ_API_KEY_2"),
+        ({"writer_provider": "anthropic"}, "ANTHROPIC_API_KEY"),
         ({"writer_fallbacks": "bogus:model"}, "unknown provider"),
     ],
 )
@@ -209,7 +212,7 @@ def test_second_groq_key_is_optional_and_skipped_without_it():
     assert ("groq2", "openai/gpt-oss-120b") not in [(link.provider, link.model) for link in links]
     links = writer_links(s, {"groq": object(), "groq2": object(), "openrouter": object()})
     assert [(link.provider, link.model) for link in links][:3] == [
-        ("groq", s.groq_chat_model), ("groq2", "openai/gpt-oss-120b"), ("groq", "openai/gpt-oss-20b")
+        ("groq2", "openai/gpt-oss-120b"), ("groq", "openai/gpt-oss-20b"), ("groq", "qwen/qwen3.8-27b")
     ]
 
 
@@ -243,3 +246,29 @@ def test_qwen_gets_no_hidden_reasoning():
     assert reasoning_effort_for("qwen/qwen3.8-27b", "low") == "none"
     assert reasoning_effort_for("openai/gpt-oss-120b", "low") == "low"
     assert reasoning_effort_for("some/other", "low") is None
+
+
+def test_default_writer_is_the_paid_groq_account():
+    assert settings().writer_provider == "groq2"
+
+
+def test_anthropic_key_heads_the_chain():
+    s = settings(anthropic_api_key="sk-ant-1", groq_api_key_2="gsk-2")
+    clients = {"anthropic": object(), "groq": object(), "groq2": object()}
+    links = writer_links(s, clients)
+    assert (links[0].provider, links[0].model) == ("anthropic", s.anthropic_model)
+    assert (links[1].provider, links[1].model) == ("groq2", "openai/gpt-oss-120b")
+    labels = [(link.provider, link.model) for link in links]
+    assert labels.count(("anthropic", s.anthropic_model)) == 1  # not duplicated by primary + prepend
+
+
+def test_writer_provider_anthropic_is_not_prepended_twice():
+    s = settings(writer_provider="anthropic", anthropic_api_key="sk-ant-1")
+    links = writer_links(s, {"anthropic": object(), "groq": object()})
+    assert [(link.provider, link.model) for link in links].count(("anthropic", s.anthropic_model)) == 1
+
+
+def test_anthropic_key_is_a_redacted_secret():
+    s = settings(anthropic_api_key="sk-ant-secret")
+    assert "sk-ant-secret" in s.secret_values()
+    assert "sk-ant-secret" not in repr(s)

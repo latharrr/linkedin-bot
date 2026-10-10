@@ -19,7 +19,7 @@ from app.log import get_logger
 
 log = get_logger(__name__)
 
-RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
+RETRY_STATUS = frozenset({429, 500, 502, 503, 504, 529})  # 529: Anthropic "overloaded"
 MAX_BACKOFF = 30.0
 MAX_MINUTE_WAIT = 65.0  # default cap; a per-minute window always clears within a minute
 _PER_MINUTE = re.compile(r"per minute|\bTPM\b|\bRPM\b", re.I)
@@ -93,8 +93,12 @@ class ApiClient:
         self._minute_wait_cap = minute_wait_cap
         self._sleep = sleep
 
+    def _auth_headers(self) -> dict[str, str]:
+        """Bearer auth by default; providers with their own scheme (Anthropic: x-api-key) override."""
+        return {"Authorization": f"Bearer {self._key}"}
+
     async def _post(self, url: str, body: dict[str, Any], timeout: float) -> dict[str, Any]:
-        headers = {"Authorization": f"Bearer {self._key}", "Accept": "application/json"}
+        headers = {**self._auth_headers(), "Accept": "application/json"}
         what = url.rsplit("/", 1)[-1]
         for attempt in range(self._max_attempts):
             last = attempt == self._max_attempts - 1

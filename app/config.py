@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     supabase_bucket: str = "post-images"
 
     # Who does what. Writer: outline, drafts, de-AI pass. Research: facts for the drafts.
-    writer_provider: Literal["groq", "openrouter", "modelscope", "zenmux", "nvidia"] = "groq"
+    writer_provider: Literal["groq", "groq2", "openrouter", "modelscope", "zenmux", "nvidia", "anthropic"] = "groq2"
     # Comma-separated provider:model list tried after the primary writer ("" = no fallback).
     writer_fallbacks: str = DEFAULT_WRITER_FALLBACKS
     research_provider: Literal["browse", "tavily"] = "browse"
@@ -85,6 +85,11 @@ class Settings(BaseSettings):
     # ZenMux (free models; the key must be allowed to use them)
     zenmux_api_key: SecretStr | None = None
     zenmux_chat_model: str = "dots-studio/dots3-note-prev"
+
+    # Anthropic (paid Claude, console.anthropic.com): the strong writer. With the key set it
+    # heads the chain automatically (services.writer_links); the rest of the chain backs it up.
+    anthropic_api_key: SecretStr | None = None
+    anthropic_model: str = "claude-haiku-5-5"
 
     # NVIDIA NIM (embeddings, FLUX images; optional writer)
     nvidia_api_key: SecretStr
@@ -137,10 +142,14 @@ class Settings(BaseSettings):
             raise ValueError("MODELSCOPE_API_KEY is required for WRITER_PROVIDER=modelscope")
         if self.writer_provider == "zenmux" and not self.zenmux_api_key:
             raise ValueError("ZENMUX_API_KEY is required for WRITER_PROVIDER=zenmux")
+        if self.writer_provider == "groq2" and not self.groq_api_key_2:
+            raise ValueError("GROQ_API_KEY_2 is required for WRITER_PROVIDER=groq2")
+        if self.writer_provider == "anthropic" and not self.anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY is required for WRITER_PROVIDER=anthropic")
         from app.openrouter import parse_chain
 
         for provider, _model in parse_chain(self.writer_fallbacks):
-            if provider not in ("groq", "groq2", "openrouter", "modelscope", "zenmux", "nvidia"):
+            if provider not in ("groq", "groq2", "openrouter", "modelscope", "zenmux", "nvidia", "anthropic"):
                 raise ValueError(f"unknown provider {provider!r} in WRITER_FALLBACKS")
         if self.research_provider == "tavily" and not self.tavily_api_key:
             raise ValueError("TAVILY_API_KEY is required for RESEARCH_PROVIDER=tavily")
@@ -164,6 +173,7 @@ class Settings(BaseSettings):
             self.brightdata_api_key,
             self.jev_api_key,
             self.newsdata_api_key,
+            self.anthropic_api_key,
             self.tavily_api_key,
             self.linkedin_client_secret,
         ]

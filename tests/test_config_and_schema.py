@@ -31,7 +31,8 @@ def test_defaults():
     assert s.nvidia_chat_model == "deepseek-ai/deepseek-v4.1-flash"
     assert s.nvidia_embed_model == "nvidia/nemotron-3-embed-1b"
     assert s.draft_temperature == 0.85
-    assert not hasattr(s, "image_quality") and not hasattr(s, "anthropic_api_key") and not hasattr(s, "openai_api_key")
+    assert not hasattr(s, "image_quality") and not hasattr(s, "openai_api_key")
+    assert s.anthropic_api_key is None and s.anthropic_model == "claude-haiku-5-5"
     assert s.keywords == []
 
 

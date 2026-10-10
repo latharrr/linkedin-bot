@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import httpx
 from tavily import AsyncTavilyClient
 
+from app.anthropic import AnthropicClient
 from app.brightdata import BrightData
 from app.config import Settings
 from app.db import EMBED_DIM, Database
@@ -125,9 +126,16 @@ def build_zenmux(settings: Settings, http: httpx.AsyncClient) -> ZenMuxClient:
     return ZenMuxClient(settings.zenmux_api_key.get_secret_value(), http, chat_timeout=settings.llm_timeout)
 
 
+def build_anthropic(settings: Settings, http: httpx.AsyncClient) -> AnthropicClient:
+    assert settings.anthropic_api_key is not None
+    return AnthropicClient(settings.anthropic_api_key.get_secret_value(), http, chat_timeout=settings.llm_timeout)
+
+
 def primary_model(settings: Settings) -> str:
     return {
         "groq": settings.groq_chat_model,
+        "groq2": settings.groq_chat_model,
+        "anthropic": settings.anthropic_model,
         "openrouter": settings.openrouter_chat_model,
         "modelscope": settings.modelscope_chat_model,
         "zenmux": settings.zenmux_chat_model,
@@ -138,6 +146,9 @@ def primary_model(settings: Settings) -> str:
 def writer_links(settings: Settings, clients: dict[str, object]) -> list[ChainLink]:
     """Primary writer first, then WRITER_FALLBACKS; providers without a key are skipped."""
     wanted = [(settings.writer_provider, primary_model(settings)), *parse_chain(settings.writer_fallbacks)]
+    if "anthropic" in clients and settings.writer_provider != "anthropic":
+        # A paid Claude key upgrades the whole chain: it writes, the rest backs it up.
+        wanted.insert(0, ("anthropic", settings.anthropic_model))
     links: list[ChainLink] = []
     for provider, model in wanted:
         client = clients.get(provider)
@@ -204,6 +215,8 @@ async def build_services(settings: Settings, messenger: Messenger | None = None)
         clients["modelscope"] = build_modelscope(settings, http)
     if settings.zenmux_api_key:
         clients["zenmux"] = build_zenmux(settings, http)
+    if settings.anthropic_api_key:
+        clients["anthropic"] = build_anthropic(settings, http)
     recorder = UsageRecorder(db)
     for client in clients.values():
         client.recorder = recorder  # type: ignore[attr-defined]

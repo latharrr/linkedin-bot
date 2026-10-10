@@ -140,8 +140,8 @@ def with_bank(voice: dict[str, Any], bank: dict[str, Any]) -> dict[str, Any]:
 
 
 async def recent_claims(svc: Services, facts: list[str], skip: str | None = None) -> list[str]:
-    """What his posts from the last REPEAT_WINDOW (posted or scheduled) already said about
-    him: the claims logged on each row, or read off an older row's text."""
+    """What his posts from the last REPEAT_WINDOW (published, scheduled or just shown to
+    him) already said about him: the claims logged on each row, or read off the row's text."""
     rows = await optional(lambda: svc.db.recent_posts(utcnow() - REPEAT_WINDOW), [], "recent_posts")
     names = his_names(facts)
     out: list[str] = []
