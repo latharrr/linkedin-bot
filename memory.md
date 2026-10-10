@@ -551,3 +551,6 @@ Run the tests with:
 - Writer chain: groq2 paid primary, claude-haiku-5-5 (Anthropic) prepended as strong writer; key in .env via Instinct vault.
 - Cleaned 4 junk story-bank entries; discarded 2 stale Sep drafts; no-repeat now counts drafted/generated stories.
 - Redeployed ~16:57 UTC, bot+scheduler healthy. Push to origin pending (code-server GitHub auth wedged); full backup bundle at /opt/automations/linkedin-bot-backup-20261010.bundle.
+
+## 2026-10-10 P2 deployed (commit 4fd05b9)
+- Chat history now persists across restarts: ChatMemory snapshots to settings key chat_history:<chat_id> (12-turn window), restored on boot, flushed after each update. Pushed to origin via PAT credential store.
