@@ -25,16 +25,17 @@ from app import corpus
 from app.config import Settings, get_settings
 from app.db import Database, Post
 from app.images import hook_of, sniff_image_type
-from app.linkedin import (
-    ImageUploadError,
-    LinkedInClient,
-    LinkedInError,
-    PostMaybeLive,
-    PostRejected,
-    build_post_payload,
-    post_url_from_restli_id,
-)
+from app.linkedin import ImageUploadError, LinkedInClient, LinkedInError
 from app.log import get_logger, register_secret, setup_logging
+from app.publishers import (
+    Draft,
+    MaybeLive,
+    NotPublished,
+    Publisher,
+    PublishResult,
+    Unsupported,
+)
+from app.publishers.linkedin import AUTHOR_KEY, TOKEN_MISSING, LinkedInPublisher
 from app.services import Embedder, build_nvidia
 from app.telegram_ui import (
     Messenger,
@@ -53,7 +54,6 @@ BATCH = 5
 DRY_RUN_AUTHOR = "urn:li:person:DRY_RUN"
 DRY_RUN_IMAGE = "urn:li:image:DRY_RUN"
 MAYBE_LIVE = "⚠ May already be live — check LinkedIn before touching it: {brief}"
-TOKEN_MISSING = "LinkedIn token missing — run scripts/linkedin_auth.py"
 
 FetchImage = Callable[[str], Awaitable[bytes]]
 
@@ -82,16 +82,9 @@ class Dispatcher:
 
     # step 1 ----------------------------------------------------------------------
     async def resolve_author(self) -> str:
-        urn = await self.db.get_setting("linkedin_author_urn")
-        if urn:
-            return urn
-        if self.dry_run:
+        if self.dry_run and not await self.db.get_setting(AUTHOR_KEY):
             return DRY_RUN_AUTHOR
-        if self.linkedin is None:
-            raise LinkedInError(TOKEN_MISSING)
-        urn = f"urn:li:person:{await self.linkedin.userinfo_sub()}"
-        await self.db.set_setting("linkedin_author_urn", urn)
-        return urn
+        return await LinkedInPublisher.resolve_author(self.db, self.linkedin)
 
     # step 2 ----------------------------------------------------------------------
     async def check_stuck(self, now: datetime) -> None:
@@ -149,26 +142,27 @@ class Dispatcher:
             raise ImageUploadError("image is not PNG/JPEG (LinkedIn rejects WebP)")
         return data, content_type
 
+    def publisher(self, post: Post, author: str) -> Publisher:
+        """The adapter for this row's platform. Only LinkedIn so far (app/publishers/)."""
+        if post.platform != "linkedin":
+            raise Unsupported(f"no publisher for {post.platform!r} yet")
+        return LinkedInPublisher(self.linkedin, author)
+
     async def publish(self, post: Post, author: str, now: datetime) -> None:
         assert self.linkedin is not None
         which = post.chosen or "a"
         text = post.draft(which)
         if not text.strip():  # never publish an empty post (e.g. draft B chosen on a one-post row)
             return await self.fail_retryable(post, f"draft {which} is empty — nothing to post")
-        image_urn: str | None = None
         try:
+            publisher = self.publisher(post, author)
             data, content_type = await self.download(post.image_url(which))
-            upload_url, image_urn = await self.linkedin.init_upload(author)
-            await self.linkedin.put_image(upload_url, data, content_type)
-            restli_id = await self.linkedin.create_post(build_post_payload(author, text, image_urn, hook_of(text)))
-            url = post_url_from_restli_id(restli_id)
-        except (ImageUploadError, PostRejected) as exc:
+            result = await publisher.publish(Draft(text, data, content_type, hook_of(text)))
+        except NotPublished as exc:
             return await self.fail_retryable(post, str(exc))
-        except PostMaybeLive as exc:
+        except MaybeLive as exc:
             return await self.maybe_live(post, str(exc), now)
-        except ValueError as exc:  # 2xx but an id we can't turn into a URL: likely live
-            return await self.maybe_live(post, f"posted but {exc}", now)
-        await self.succeed(post, url, image_urn, now)
+        await self.succeed(post, result, now)
 
     async def dry_publish(self, post: Post, author: str) -> None:
         which = post.chosen or "a"
@@ -178,14 +172,19 @@ class Dispatcher:
             image = {"bytes": len(data), "content_type": content_type}
         except ImageUploadError as exc:
             image = {"error": str(exc)}
-        payload = build_post_payload(author, text, DRY_RUN_IMAGE, hook_of(text))
+        payload = LinkedInPublisher(None, author).payload(Draft(text, title=hook_of(text)), DRY_RUN_IMAGE)
         self.payloads.append(payload)
         self.report["dry_run"] += 1
         log.info("dry_run_payload", extra={"post_id": post.id, "chosen": which, "image": image, "payload": payload})
 
     # outcomes --------------------------------------------------------------------
-    async def succeed(self, post: Post, url: str, image_urn: str | None, now: datetime) -> None:
-        fields = {"status": "posted", "posted_at": now, "image_urn": image_urn, "post_url": url, "error": None}
+    async def succeed(self, post: Post, result: PublishResult, now: datetime) -> None:
+        url = result.url
+        fields = {
+            "status": "posted", "posted_at": now, "image_urn": result.data.get("image_urn"), "post_url": url, "error": None,
+            "platform_post_id": result.platform_post_id,
+            "platform_data": {**(post.platform_data or {}), post.platform: {"post_id": result.platform_post_id, "url": url, **result.data}},
+        }
         try:
             updated = await self.db.update_post(post.id, fields, status="posting")
         except Exception:

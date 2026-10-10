@@ -11,7 +11,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from supabase import AsyncClient, AsyncClientOptions, acreate_client
 
 from app.timeutil import utcnow
@@ -27,7 +27,8 @@ EMBED_DIM = 2048  # must match vector(2048) in scripts/schema.sql
 POST_COLUMNS = (
     "id,chat_id,brief,topic,template,research,draft_a,draft_b,edited_a,edited_b,"
     "image_a_url,image_b_url,image_urn,chosen,scheduled_at,status,claimed_at,alerted_at,"
-    "retry_count,error,post_url,past_post_id,created_at,posted_at"
+    "retry_count,error,post_url,past_post_id,created_at,posted_at,"
+    "platform,targets,platform_post_id,platform_data"
 )
 
 
@@ -58,6 +59,13 @@ class Post(BaseModel):
     past_post_id: str | None = None
     created_at: datetime | None = None
     posted_at: datetime | None = None
+    # Multi-platform (scripts/migrations/2026-09-26_platforms.sql). `platform` is the one this
+    # row publishes to; `targets` every platform the draft is meant for; platform_data holds
+    # each platform's result ({"linkedin": {"post_id", "url", ...}}).
+    platform: str = "linkedin"
+    targets: list[str] = Field(default_factory=lambda: ["linkedin"])
+    platform_post_id: str | None = None
+    platform_data: dict[str, Any] | None = None
 
     def draft(self, which: str) -> str:
         return (self.draft_a if which == "a" else self.draft_b) or ""

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 import httpx
+
+from app.publishers.base import MaybeLive, NotPublished, PublishError
 
 # ── Little text (A1) ─────────────────────────────────────────────────────────
 # `commentary` is parsed as LinkedIn "little text": these characters are
@@ -62,25 +64,25 @@ def looks_like_post_url(text: str) -> bool:
 API = "https://api.linkedin.com"
 
 
-class LinkedInError(RuntimeError):
+class LinkedInError(PublishError):
     """Base. Subclasses encode whether the post could already be live."""
 
 
-class ImageUploadError(LinkedInError):
+class ImageUploadError(LinkedInError, NotPublished):
     """Image download/init/PUT failed. Nothing was posted → safe to retry."""
 
 
-class PostRejected(LinkedInError):
+class PostRejected(LinkedInError, NotPublished):
     """POST /rest/posts definitely did not publish (4xx, or the request never
     reached LinkedIn) → safe to retry."""
 
 
-class PostMaybeLive(LinkedInError):
+class PostMaybeLive(LinkedInError, MaybeLive):
     """Timeout / 5xx / broken response on POST /rest/posts: it may be live.
     Never retried automatically; a human confirms via Live ✓ / Not live."""
 
 
-class AuthLookupError(LinkedInError):
+class AuthLookupError(LinkedInError, NotPublished):
     """/v2/userinfo failed (usually an expired token)."""
 
 
@@ -174,3 +176,12 @@ class LinkedInClient:
         if not restli_id:
             raise PostMaybeLive(f"posts: HTTP {resp.status_code} but no x-restli-id header")
         return restli_id
+
+    async def delete_post(self, urn: str) -> None:
+        """DELETE /rest/posts/{urn}. 404 counts as done (already gone)."""
+        try:
+            resp = await self._http.delete(f"{API}/rest/posts/{quote(urn, safe='')}", headers=self._headers() | {"X-RestLi-Method": "DELETE"})
+        except httpx.HTTPError as exc:
+            raise LinkedInError(f"delete: {type(exc).__name__}") from exc
+        if resp.status_code >= 300 and resp.status_code != 404:
+            raise LinkedInError(f"delete: {_describe(resp)}")
