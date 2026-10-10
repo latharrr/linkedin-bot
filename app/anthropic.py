@@ -10,6 +10,7 @@ to the next link, anything else -> "stop".
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from app.apiclient import ApiClient, ApiError, ChatResult
@@ -35,7 +36,11 @@ class AnthropicClient(ApiClient):
         self._chat_timeout = chat_timeout
 
     def _auth_headers(self) -> dict[str, str]:
-        return {"x-api-key": self._key, "anthropic-version": API_VERSION}
+        headers = {"x-api-key": self._key, "anthropic-version": API_VERSION}
+        workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
+        if workspace:  # a key that is not scoped to one workspace must name it (HTTP 400 otherwise)
+            headers["anthropic-workspace-id"] = workspace
+        return headers
 
     async def chat(
         self,
