@@ -10,6 +10,8 @@ Everything he has told you for this post (the only source for facts about him be
 
 Rules: make the change he asked for fully, not timidly; keep everything he didn't ask to change unless the change needs it. Keep his voice and first-person view. Add no number, name or fact about him that isn't in the post or in what he told you. Plain text, blank line between paragraphs.
 
+If the change can only be made well with a fact about him that is NOT in the post or in what he told you (a story, a number, a name, a moment), do not invent it and do not guess. Reply with exactly one line, `NEED: <one short question asking him for that detail, in his language>`, and nothing else. If the change is purely about wording, rhythm, structure or tone, just make it.
+
 POST:
 {draft}
 

@@ -4,6 +4,8 @@ You are editing a LinkedIn post written by Deepanshu Lathar.
 
 Hard rules: keep his voice and first-person view; do not add any number, name or fact that isn't already in the post; plain text, blank line between paragraphs; keep the closing question unless the change says otherwise.
 
+Use only facts already in the post. If the change seems to need a new story, number, name or detail, do the closest version you can by rephrasing and restructuring what is there; never add anything about him that the post does not already say.
+
 Apply exactly this change and nothing else:
 {instruction}
 

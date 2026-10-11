@@ -57,6 +57,7 @@ from app.pipeline import (
     audit_flags,
     copied_for,
     make_images,
+    need_question,
     preview,
     regenerate,
     run_brief,
@@ -1522,7 +1523,10 @@ class BotHandler:
             notes = [str(n) for n in research.get("his_notes") or []] + ([instruction] if instruction else [])
             brief = "\n".join([post.brief, *notes])
             if mode == "revise":
-                edited = scrub_names(airy(await self.svc.writer.revise(current, instruction, brief)))  # no company/product names, even if he typed them
+                raw = await self.svc.writer.revise(current, instruction, brief)
+                if question := need_question(raw):  # needs a fact only he has: ask, never invent
+                    return await self.say(post.chat_id, question)
+                edited = scrub_names(airy(raw))  # no company/product names, even if he typed them
             else:
                 edited = scrub_names(airy(await self.svc.writer.tune(current, mode, hooks)))
             corpus = research_corpus(research, brief)
@@ -1730,7 +1734,7 @@ def run_polling(settings: Settings) -> None:
     app = (
         Application.builder()
         .token(settings.telegram_bot_token.get_secret_value())
-        .connect_timeout(10)
+        .connect_timeout(20)
         .read_timeout(t)
         .write_timeout(t)
         .media_write_timeout(60)

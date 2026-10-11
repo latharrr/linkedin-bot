@@ -122,11 +122,20 @@ class BrightData:
 
     # ── dataset helpers ──────────────────────────────────────────────────────
     async def chatgpt_search(self, prompt: str) -> dict[str, Any]:
-        records = await self.scrape(
-            CHATGPT_SEARCH,
-            [{"url": "https://chatgpt.com/", "prompt": prompt, "country": "", "web_search": True, "require_sources": True, "additional_prompt": ""}],
-        )
-        rec = next((r for r in records if not r.get("error")), None)
+        extra = ""
+        for attempt in (1, 2):
+            records = await self.scrape(
+                CHATGPT_SEARCH,
+                [{"url": "https://chatgpt.com/", "prompt": prompt, "country": "", "web_search": True, "require_sources": True, "additional_prompt": extra}],
+            )
+            rec = next((r for r in records if not r.get("error")), None)
+            if rec is not None:
+                break
+            # "Sources are not displayed": ChatGPT answered without citations. One retry that asks for links.
+            if attempt == 1 and records and "sources are not displayed" in str(records[0].get("error")).lower():
+                extra = "Show the source links for every fact."
+                continue
+            break
         if rec is None:
             raise BrightDataError(f"chatgpt_search: {records[0].get('error') if records else 'no record'}")
         return rec

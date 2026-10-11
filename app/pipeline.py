@@ -291,6 +291,13 @@ _NAME_SUBS = [
 ]
 
 
+def need_question(text: str) -> str | None:
+    """A revision the model could not do without a fact it doesn't have answers `NEED: <question>`
+    instead of inventing one; returns the question, or None for a normal rewrite."""
+    m = re.match(r"\s*NEED:\s*(.+)", text or "", re.S | re.I)
+    return m.group(1).strip().splitlines()[0].strip() if m else None
+
+
 def scrub_names(text: str) -> str:
     for pat, repl in _NAME_SUBS:
         text = pat.sub(repl, text)
