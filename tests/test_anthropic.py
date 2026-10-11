@@ -47,7 +47,7 @@ async def test_sends_anthropic_shape_and_parses_reply():
     assert body["model"] == "claude-haiku-5-5"
     assert body["system"] == "voice"  # the system prompt rides as a field, not a message
     assert body["messages"] == [{"role": "user", "content": "brief"}]
-    assert body["max_tokens"] == 1200 and body["temperature"] == 0.85
+    assert body["max_tokens"] == 1200 and "temperature" not in body  # Haiku 5.5 rejects sampling params
     assert result.text == "Clean post." and result.finish_reason == "stop"
 
 

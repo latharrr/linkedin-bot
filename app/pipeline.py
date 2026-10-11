@@ -278,6 +278,25 @@ async def own_words_draft(
     return await svc.writer.draft(which, brief, outline, facts, voice, few_shot, rewrite_note=REWRITE_NOTE)
 
 
+# He never wants his employer, products or former companies named in a post (stated 2026-10-08:
+# "dont mention names" - say "a startup I work at"). The model keeps naming them because the story
+# bank and playbook mention them, so this is enforced in code on the final text, not left to the prompt.
+_NAME_SUBS = [
+    (re.compile(r"\b([Aa]t|[Ff]or|[Ww]ith|[Ii]n) PicaPool(?:'s|\u2019s)?"), r"\1 the startup I work at"),
+    (re.compile(r"\bPicaPool(?:'s|\u2019s)"), "my startup's"),
+    (re.compile(r"\bPicaPool\b"), "the startup I work at"),
+    (re.compile(r"\bProof ?Mart(?:'s|\u2019s)?\b", re.I), "a product I'm building"),
+    (re.compile(r"\bUni ?Lyf(?:'s|\u2019s)?\b", re.I), "an earlier startup"),
+    (re.compile(r"\bGapl(?:'s|\u2019s)?\b", re.I), "a side project"),
+]
+
+
+def scrub_names(text: str) -> str:
+    for pat, repl in _NAME_SUBS:
+        text = pat.sub(repl, text)
+    return text
+
+
 async def write_drafts(
     svc: Services,
     brief: str,
@@ -312,7 +331,7 @@ async def write_drafts(
     post = polished
     post = await fit_shape(svc.writer, post, corpus, [str(h) for h in outline.get("hooks") or []])
     cta = str(outline.get("cta_question") or "")
-    post = ps_ending(unbold(post), cta)  # hard rules: no bold, ends on a P.S. question
+    post = scrub_names(ps_ending(unbold(post), cta))  # hard rules: no bold, no company/product names, ends on a P.S. question
     # The grounding gate: anything about him that isn't traceable, copied from his profile
     # card, reused from a recent post or left as a blank never ships. One grounded rewrite,
     # told exactly what to leave out; if that still has problems, he's asked (Ungrounded).
