@@ -156,7 +156,7 @@ def blocked(monkeypatch):
 
 
 async def test_ungrounded_draft_asks_for_his_real_detail_and_uses_his_answer(h, fakes, blocked):
-    await h.on_text(CHAT_ID, "make a post about churn in campus apps")
+    await h.on_text(CHAT_ID, "draft: churn in campus apps")
     await drain(h)
     ask = fakes["messenger"].texts()[-1]
     assert ask.startswith("✋ I held this draft back instead of guessing.")
@@ -170,7 +170,7 @@ async def test_ungrounded_draft_asks_for_his_real_detail_and_uses_his_answer(h, 
 
 
 async def test_no_personal_story_button_drafts_without_one(h, fakes, blocked):
-    await h.on_text(CHAT_ID, "make a post about churn in campus apps")
+    await h.on_text(CHAT_ID, "draft: churn in campus apps")
     await drain(h)
     none = next(cb for cb in buttons(fakes) if cb.startswith("ask:none:"))
     await h.on_callback(CHAT_ID, "cb", none, message_id=7)
@@ -179,7 +179,7 @@ async def test_no_personal_story_button_drafts_without_one(h, fakes, blocked):
 
 
 async def test_drop_it_and_a_typed_no_save_nothing(h, fakes, blocked):
-    await h.on_text(CHAT_ID, "make a post about churn in campus apps")
+    await h.on_text(CHAT_ID, "draft: churn in campus apps")
     await drain(h)
     await h.on_text(CHAT_ID, "no")
     assert fakes["messenger"].texts()[-1] == "Okay — dropped it. Nothing was saved."
@@ -187,7 +187,7 @@ async def test_drop_it_and_a_typed_no_save_nothing(h, fakes, blocked):
 
 
 async def test_a_question_while_asked_is_not_taken_as_the_answer(h, fakes, blocked):
-    await h.on_text(CHAT_ID, "make a post about churn in campus apps")
+    await h.on_text(CHAT_ID, "draft: churn in campus apps")
     await drain(h)
     await h.on_text(CHAT_ID, "what's queued?")
     assert len(blocked) == 1 and CHAT_ID in h.asks
@@ -200,7 +200,7 @@ async def test_referral_code_is_asked_for_never_invented(h, fakes, monkeypatch):
         briefs.append(brief)
 
     monkeypatch.setattr(botmod, "run_brief", fake_run_brief)
-    await h.on_text(CHAT_ID, "make a post about Groq's free tier and add my referral code")
+    await h.on_text(CHAT_ID, "draft: Groq's free tier and add my referral code")
     assert fakes["messenger"].texts()[-1] == "What's your referral code? Send it exactly as it should appear — I won't make one up."
     assert briefs == []
     await h.on_text(CHAT_ID, "GROQ-DL-2026")

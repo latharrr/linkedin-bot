@@ -128,7 +128,9 @@ def build_zenmux(settings: Settings, http: httpx.AsyncClient) -> ZenMuxClient:
 
 def build_anthropic(settings: Settings, http: httpx.AsyncClient) -> AnthropicClient:
     assert settings.anthropic_api_key is not None
-    return AnthropicClient(settings.anthropic_api_key.get_secret_value(), http, chat_timeout=settings.llm_timeout)
+    return AnthropicClient(
+        settings.anthropic_api_key.get_secret_value(), http, chat_timeout=settings.llm_timeout, effort=settings.anthropic_effort
+    )
 
 
 def primary_model(settings: Settings) -> str:

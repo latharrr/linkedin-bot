@@ -149,7 +149,7 @@ def test_default_chain_covers_every_free_provider_in_probe_order():
 
 BASE = dict(
     telegram_bot_token="t", my_chat_id=1, supabase_url="https://x.supabase.co", supabase_service_key="s",
-    nvidia_api_key="n", linkedin_api_version="202601", groq_api_key="g",
+    nvidia_api_key="n", linkedin_api_version="202601", groq_api_key="g", anthropic_api_key="a",
 )
 
 
@@ -188,7 +188,7 @@ def test_build_writer_uses_plain_client_when_no_fallbacks():
         ({"writer_provider": "modelscope"}, "MODELSCOPE_API_KEY"),
         ({"writer_provider": "zenmux"}, "ZENMUX_API_KEY"),
         ({"writer_provider": "groq2"}, "GROQ_API_KEY_2"),
-        ({"writer_provider": "anthropic"}, "ANTHROPIC_API_KEY"),
+        ({"writer_provider": "anthropic", "anthropic_api_key": None}, "ANTHROPIC_API_KEY"),
         ({"writer_fallbacks": "bogus:model"}, "unknown provider"),
     ],
 )
@@ -248,12 +248,15 @@ def test_qwen_gets_no_hidden_reasoning():
     assert reasoning_effort_for("some/other", "low") is None
 
 
-def test_default_writer_is_the_paid_groq_account():
-    assert settings().writer_provider == "groq2"
+def test_default_writer_is_claude():
+    s = settings()
+    assert (s.writer_provider, s.anthropic_model) == ("anthropic", "claude-haiku-5-5")
+    links = writer_links(s, {"anthropic": object(), "groq": object(), "groq2": object()})
+    assert (links[0].provider, links[0].model) == ("anthropic", "claude-haiku-5-5")
 
 
 def test_anthropic_key_heads_the_chain():
-    s = settings(anthropic_api_key="sk-ant-1", groq_api_key_2="gsk-2")
+    s = settings(writer_provider="groq2", anthropic_api_key="sk-ant-1", groq_api_key_2="gsk-2")
     clients = {"anthropic": object(), "groq": object(), "groq2": object()}
     links = writer_links(s, clients)
     assert (links[0].provider, links[0].model) == ("anthropic", s.anthropic_model)

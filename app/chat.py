@@ -1,8 +1,10 @@
 """Conversation mode for the Telegram bot.
 
-Plain messages get a short chat reply. Asking for a post ("make a post about X",
-"draft: X", or saying yes to a suggested topic) starts the draft pipeline. Chat
-never posts or schedules anything: drafts still need a human pick AND a time.
+Plain messages get a chat reply. Asking for a post in your own words ("make a post
+about X") opens a short conversation that pins down the angle before anything is
+drafted; the explicit short forms ("draft: X", "/new X", a pasted link) start the
+draft pipeline straight away. Chat never posts or schedules anything: drafts still
+need a human pick AND a time.
 """
 
 from __future__ import annotations
@@ -10,10 +12,10 @@ from __future__ import annotations
 import json
 import re
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 MIN_TOPIC_CHARS = 3  # "RAG" is a fine topic when the request is explicit
-HISTORY_TURNS = 12  # messages kept per chat (user + assistant), persisted to settings
+HISTORY_TURNS = 24  # room for the back-and-forth that shapes a post; messages kept per chat (user + assistant), persisted to settings
 
 _POLITE = r"(?:(?:hey|hi|ok|okay|please|pls|so|now|can\s+you|could\s+you|would\s+you|let'?s|go\s+ahead\s+and)[\s,]+)*"
 _VERB = r"(?:make|write|draft|create|generate|prepare|craft|do|start|give\s+me)"
@@ -63,9 +65,12 @@ _NO = re.compile(r"^(?:n|no|nope|nah|don'?t|do\s+not|cancel|keep\s+(?:it|them)|n
 
 @dataclass(frozen=True)
 class DraftRequest:
-    """topic=None: asked for a post without saying what about (or said "it/that")."""
+    """topic=None: asked for a post without saying what about (or said "it/that").
+    direct=False: asked in his own words ("make a post about X"), so the chat model talks
+    the angle through first; True: an explicit command ("draft: X", "/new X")."""
 
     topic: str | None
+    direct: bool = field(default=True, compare=False)
 
 
 def parse_draft_request(text: str) -> DraftRequest | None:
@@ -73,13 +78,14 @@ def parse_draft_request(text: str) -> DraftRequest | None:
     t = text.strip()
     if _DRAFT_THAT.match(t):
         return DraftRequest(None)
-    m = _REQUEST.match(t) or _SHORT.match(t)
+    short = _SHORT.match(t)
+    m = short or _REQUEST.match(t)
     if not m:
         return None
     topic = m.group("topic").strip().strip(" .!?,:;-—–").strip()
     if topic.lower() in _REFERENCES or len(topic) < MIN_TOPIC_CHARS:
         return DraftRequest(None)
-    return DraftRequest(topic)
+    return DraftRequest(topic, direct=bool(short))
 
 
 def wants_bot_to_pick(text: str) -> bool:

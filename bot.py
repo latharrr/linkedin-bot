@@ -102,10 +102,11 @@ TOKEN_WARN_DAYS = 50
 NOW_DELAY = timedelta(minutes=2)
 
 HELP = (
-    "Talk to me normally. When you want a post, say so:\n"
-    "• make a post about <topic>   • draft: <topic>\n"
+    "Talk to me normally. Tell me what you want to post about and we'll work out the angle\n"
+    "together; I start writing once it's clear (or when you say \"just write it\").\n"
+    "• draft: <topic> — skip the chat and write straight away\n"
     "• paste a link + \"something on this?\"\n"
-    "• make a post — I'll ask what about (\"you pick\" = today's news)\n"
+    "After a draft lands, just tell me what to change (\"more personal\", \"add that it took 3 weeks\").\n"
     "Or just ask: \"what's queued\", \"any drafts waiting\", \"how's usage looking\", \"what should I post about\".\n"
     "Or tell me: \"schedule it for 6pm\", \"move it to Friday 9am\", \"unschedule it\", \"make it shorter\" (I'll ask ✅ first).\n\n"
     "I research it with every source (Groq browsing, Bright Data, Tavily, NewsData), write\n"
@@ -164,6 +165,7 @@ ACTION_STATUSES: dict[str, tuple[str, ...]] = {
     "unschedule": ("queued",),
     "discard": ("awaiting_choice", "queued"),
     "tune": ("awaiting_choice",),
+    "revise": ("awaiting_choice",),  # a free-form change he asked for in chat
     "new_image": ("awaiting_choice",),
     "show": ("awaiting_choice",),
     "asap": ("queued",),  # ⚡ Post now: button only (confirmed), never a chat action
@@ -230,7 +232,7 @@ INPUT_NOTE = "\n\nHis {thing}, to use exactly as given (never change or invent i
 REF_TAG = re.compile(r"[ \t]*[\[(]?\bref[:\s]+[0-9a-f]{6,}[\])]?", re.IGNORECASE)
 TUNE_LABELS = {"short": "✂️ Shortening", "hook": "🎣 Rewriting the hook of", "bold": "🔥 Sharpening"}
 ASK_TOPIC = "What should the post be about? Send a topic or a link — or say \"you pick\" and I'll draft from today's news."
-CHAT_DOWN = "I couldn't reach the chat model just now. To start drafts anyway, say: make a post about <topic>."
+CHAT_DOWN = "I couldn't reach the chat model just now. To start drafts anyway, say: draft: <topic>."
 REAUTH_STEPS = (
     "LinkedIn re-auth (≈2 min):\n"
     "1. On your laptop: python scripts/linkedin_auth.py\n"
@@ -784,14 +786,15 @@ class BotHandler:
         return True
 
     async def on_draft_request(self, chat_id: int, text: str, request: DraftRequest) -> None:
+        if not request.direct or request.topic is None:
+            # Asked in his own words, or without a topic: talk it through first. The chat model
+            # asks what's missing (or resolves "draft that") and sets draft_topic when it's clear.
+            return await self.chat_flow(chat_id, text)
         if request.topic:
             self.memory.add(chat_id, "user", text)
-            if await self.asked_for_input(chat_id, request.topic, text):
+            if await self.asked_for_input(chat_id, request.topic, request.topic):  # "draft:" itself looks like a value
                 return None
-            return await self.start_generation(chat_id, request.topic, echo=request.topic != text)
-        if self.memory.has_context(chat_id):  # "draft that": the chat model resolves "that"
-            return await self.chat_flow(chat_id, text)
-        await self.ask_topic(chat_id)
+        return await self.start_generation(chat_id, request.topic, echo=request.topic != text)
 
     async def ask_topic(self, chat_id: int) -> None:
         await self.db.set_chat_state(chat_id, "awaiting_brief", None, self.now())
@@ -883,7 +886,8 @@ class BotHandler:
             self.memory.add(chat_id, "assistant", f"(started drafts on: {topic})")
             if reply:
                 await self.say(chat_id, reply)
-            return await self.start_generation(chat_id, topic, echo=True)
+            # long_ok: a brief the chat model built from the conversation carries his details, so it can run long
+            return await self.start_generation(chat_id, topic, echo=True, long_ok=True)
         self.memory.add(chat_id, "assistant", reply or "…")
         await self.say(chat_id, reply or "Say that again?")
 
@@ -907,10 +911,12 @@ class BotHandler:
         if isinstance(post, list):
             return await self.ask_which(chat_id, action, post)
         draft = str(action.get("draft") or "").lower() or None
-        if name in ("schedule", "tune") and draft not in ("a", "b"):
+        if name in ("schedule", "tune", "revise") and draft not in ("a", "b"):
             draft = post.chosen or (None if post.draft_b else "a")
             if draft is None:
                 return await self.tell(chat_id, "Which version, A or B?")
+        if name == "revise":
+            return await self.revise(chat_id, post, draft or "a", str(action.get("instruction") or "").strip())
         if name in ("tune", "new_image", "show"):
             return await self.run_direct_action(chat_id, name, post, draft, str(action.get("mode") or ""))
         pending = PendingAction(secrets.token_hex(4), name, [post.id], draft=draft)
@@ -1096,6 +1102,29 @@ class BotHandler:
             return await self.tell(chat_id, "I'm still working on that draft — wait for the update.")
         self.memory.add(chat_id, "assistant", f"({name} on draft {post_ref(post)})")
         await self.route_callback(chat_id, cb, post)
+
+    async def revise(self, chat_id: int, post: Post, which: str, instruction: str) -> None:
+        """A change he described in his own words ("more personal", "add that it took 3 weeks"):
+        the draft is rewritten to it, through the same number and grounding gates as ✂️ / 🎣 / 🔥."""
+        if not instruction:
+            return await self.chat_flow_note(chat_id, "(Bot: he asked to change a draft but the change wasn't clear. Ask him what to change, in your own words.)")
+        if post.id in self.regenerating:
+            return await self.tell(chat_id, "I'm still working on that draft — wait for the update.")
+        self.regenerating.add(post.id)
+        self.memory.add(chat_id, "assistant", f"(revising draft {post_ref(post)}: {instruction[:200]})")
+        await self.say(chat_id, f"✏️ Reworking draft {which.upper()}: {instruction[:200]}")
+        self.spawn(self._tune(post, which, "revise", instruction))
+
+    async def chat_flow_note(self, chat_id: int, note: str) -> None:
+        """Let the chat model word a follow-up question itself instead of a canned line."""
+        try:
+            voice = await self.db.get_voice_profile()
+            out = await self.svc.writer.converse([*self.memory.history(chat_id), {"role": "user", "content": note}], voice)
+            reply = REF_TAG.sub("", str(out.get("reply") or "")).strip()
+        except Exception:
+            log.warning("chat_note_failed")
+            reply = ""
+        await self.tell(chat_id, reply or "What should I change in it?")
 
     async def on_action_button(self, chat_id: int, data: str) -> str:
         _, choice, nonce, index = (data.split(":") + ["", "", ""])[:4]
@@ -1481,23 +1510,30 @@ class BotHandler:
         await self.start_generation(chat_id, idea.brief(), echo=True)
         return f"Drafting idea {n}"
 
-    async def _tune(self, post: Post, which: str, mode: str) -> None:
-        """✂️ / 🎣 / 🔥 on one draft. Kept only if it adds no unverifiable number."""
+    async def _tune(self, post: Post, which: str, mode: str, instruction: str = "") -> None:
+        """✂️ / 🎣 / 🔥 on one draft, or a free-form revision he asked for in chat (mode
+        "revise"). Kept only if it adds no unverifiable number. What he says in a revision
+        is his own account, so it counts as source material from then on (his_notes)."""
         try:
             current = post.draft(which)
             research = post.research or {}
             hooks = [str(h) for h in (research.get("outline") or {}).get("hooks") or []]
-            edited = airy(await self.svc.writer.tune(current, mode, hooks))
-            corpus = research_corpus(research, post.brief)
+            notes = [str(n) for n in research.get("his_notes") or []] + ([instruction] if instruction else [])
+            brief = "\n".join([post.brief, *notes])
+            if mode == "revise":
+                edited = airy(await self.svc.writer.revise(current, instruction, brief))
+            else:
+                edited = airy(await self.svc.writer.tune(current, mode, hooks))
+            corpus = research_corpus(research, brief)
             if len(unverified_numbers(edited, corpus)) > len(unverified_numbers(current, corpus)):
                 return await self.say(post.chat_id, "That edit added a number I can't verify — kept the original. Try again or ✏️ Edit.")
             facts = audit_facts(research)
             sources = research_corpus({"results": research.get("results") or []})
-            flags = (await audit_flags(self.svc.writer, edited, post.brief, facts, sources))[:3]
+            flags = (await audit_flags(self.svc.writer, edited, brief, facts, sources))[:3]
             if flags:  # the grounding gate: an edit never delivers a claim about him nothing backs
                 log.warning("tune_ungrounded", extra={"post_id": post.id, "flags": [f[:80] for f in flags]})
                 return await self.say(post.chat_id, f"That edit said something about you I can't back up (“{flags[0][:120]}”) — kept the original. Try again or ✏️ Edit.")
-            research = {**research, "claim_flags": {**(research.get("claim_flags") or {}), which: []}}
+            research = {**research, "claim_flags": {**(research.get("claim_flags") or {}), which: []}, "his_notes": notes[-10:]}
             fields = {f"draft_{which}": edited, f"edited_{which}": False, "chosen": None, "research": research}
             updated = await self.db.update_post(post.id, fields, status="awaiting_choice")
             if updated is None:

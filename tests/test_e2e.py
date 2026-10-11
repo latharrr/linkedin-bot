@@ -22,7 +22,7 @@ async def test_full_flow_requires_pick_and_time(svc, fakes):
     db, li = fakes["db"], FakeLinkedIn()
     h = BotHandler(svc, now=lambda: T0)
 
-    await h.on_text(CHAT_ID, "make a post on why student founders quit in year one")
+    await h.on_text(CHAT_ID, "draft: why student founders quit in year one")
     await drain(h)
     post_id = next(iter(db.posts))
     far_future = T0 + timedelta(days=30)

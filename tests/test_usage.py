@@ -201,7 +201,7 @@ def settings(**kw):
     base = dict(
         telegram_bot_token="123:tg-secret", my_chat_id=1, supabase_url="https://x.supabase.co", supabase_service_key="sb-secret",
         nvidia_api_key="nv-secret", groq_api_key="gsk-secret", openrouter_api_key="or-secret", tavily_api_key="tv-secret",
-        modelscope_api_key="ms-secret", zenmux_api_key="zm-secret", linkedin_api_version="202601",
+        modelscope_api_key="ms-secret", zenmux_api_key="zm-secret", anthropic_api_key="sk-ant-secret", linkedin_api_version="202601",
     )
     return Settings(_env_file=None, **{**base, **kw})
 

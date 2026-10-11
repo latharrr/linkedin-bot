@@ -95,7 +95,7 @@ async def test_handler_error_is_reported_not_raised(h, fakes, monkeypatch):
 
 # ── text routing ─────────────────────────────────────────────────────────────
 async def test_brief_runs_pipeline_in_background(h, fakes):
-    await h.on_text(CHAT_ID, "make a post about student founders quitting after year one")
+    await h.on_text(CHAT_ID, "draft: student founders quitting after year one")
     assert fakes["messenger"].texts()[0].startswith("On it")
     await drain(h)
     assert len(fakes["db"].posts) == 1
@@ -140,7 +140,7 @@ async def test_state_checked_before_commands(h, fakes):
 async def test_expired_state_is_ignored(h, fakes):
     post = fakes["db"].add_post()
     await fakes["db"].set_chat_state(CHAT_ID, "awaiting_edit_a", post.id, NOW - timedelta(minutes=31))
-    await h.on_text(CHAT_ID, "make a post about a brand new idea: agents")
+    await h.on_text(CHAT_ID, "draft: a brand new idea: agents")
     await drain(h)
     assert fakes["db"].posts[post.id]["draft_a"] == "draft A text"
     assert len(fakes["db"].posts) == 2  # treated as a new request
