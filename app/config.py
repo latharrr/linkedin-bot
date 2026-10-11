@@ -90,6 +90,7 @@ class Settings(BaseSettings):
     # heads the chain automatically (services.writer_links); the rest of the chain backs it up.
     anthropic_api_key: SecretStr | None = None
     anthropic_model: str = "claude-haiku-5-5"
+    anthropic_workspace_id: str = ""  # sent as anthropic-workspace-id; required for keys not scoped to one workspace
 
     # NVIDIA NIM (embeddings, FLUX images; optional writer)
     nvidia_api_key: SecretStr
