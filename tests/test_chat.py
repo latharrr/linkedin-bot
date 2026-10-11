@@ -15,7 +15,7 @@ from app.chat import (
 )
 from app.telegram_ui import FOOTER
 from app.timeutil import IST
-from bot import ASK_TOPIC, CHAT_DOWN, BotHandler
+from bot import CHAT_DOWN, BotHandler
 from tests.conftest import CHAT_ID
 
 NOW = datetime(2026, 9, 22, 10, 0, tzinfo=IST).astimezone(UTC)
@@ -24,7 +24,7 @@ NOW = datetime(2026, 9, 22, 10, 0, tzinfo=IST).astimezone(UTC)
 @pytest.mark.parametrize(
     ("text", "topic"),
     [
-        ("make a post about RAG in Indian startups", "RAG in Indian startups"),
+        ("draft: RAG in Indian startups", "RAG in Indian startups"),
         ("Can you write a LinkedIn post on why I gate every post behind two taps?", "why I gate every post behind two taps"),
         ("please draft a post: agents that need approval", "agents that need approval"),
         ("draft: agents that need approval", "agents that need approval"),
@@ -37,7 +37,7 @@ def test_explicit_requests_extract_topic(text, topic):
     assert parse_draft_request(text) == DraftRequest(topic)
 
 
-@pytest.mark.parametrize("text", ["make a post", "write a post about it", "draft that", "make one", "make a post on this!"])
+@pytest.mark.parametrize("text", ["make a post", "write a post about it", "draft that", "make one", "draft: this!"])
 def test_requests_without_a_topic(text):
     assert parse_draft_request(text) == DraftRequest(None)
 
@@ -83,7 +83,7 @@ async def test_hey_gets_a_chat_reply_not_a_run(h, fakes):
 
 
 async def test_explicit_request_echoes_topic_and_drafts(h, fakes):
-    await h.on_text(CHAT_ID, "make a post about RAG in Indian startups")
+    await h.on_text(CHAT_ID, "draft: RAG in Indian startups")
     assert fakes["messenger"].texts()[0].startswith("On it — researching and writing your post about:\nRAG in Indian startups")
     await drain(h)
     post = next(iter(fakes["db"].posts.values()))
@@ -127,14 +127,38 @@ async def test_chat_model_down_explains_how_to_request(h, fakes, monkeypatch):
     assert fakes["messenger"].texts() == [CHAT_DOWN] and fakes["db"].posts == {}
 
 
-async def test_topicless_request_asks_then_uses_reply(h, fakes):
+async def test_topicless_request_is_talked_through_by_the_model(h, fakes):
+    fakes["nvidia"].chat_reply = {"reply": "Sure. What happened that made you want to write about it?", "draft_topic": None}
     await h.on_text(CHAT_ID, "make a post")
-    assert fakes["messenger"].texts() == [ASK_TOPIC]
-    assert fakes["db"].chat_states[CHAT_ID]["pending_action"] == "awaiting_brief"
-    await h.on_text(CHAT_ID, "cold-emailing 50 founders for an internship")
+    assert fakes["messenger"].texts() == ["Sure. What happened that made you want to write about it?"]
+    assert fakes["db"].posts == {} and CHAT_ID not in fakes["db"].chat_states
+
+
+async def test_natural_request_talks_the_angle_through_before_drafting(h, fakes):
+    fakes["nvidia"].chat_reply = {"reply": "What broke the first time you shipped it?", "draft_topic": None}
+    await h.on_text(CHAT_ID, "make a post about my attendance bot")
     await drain(h)
-    assert next(iter(fakes["db"].posts.values()))["brief"] == "cold-emailing 50 founders for an internship"
-    assert CHAT_ID not in fakes["db"].chat_states
+    assert fakes["messenger"].texts() == ["What broke the first time you shipped it?"] and fakes["db"].posts == {}
+    assert fakes["nvidia"].chat_calls_history[-1][-1]["content"] == "make a post about my attendance bot"
+    brief = "I built an attendance bot for my college. " * 25  # the model's brief carries every detail he gave: long is fine
+    fakes["nvidia"].chat_reply = {"reply": "Writing it.", "draft_topic": brief.strip()}
+    await h.on_text(CHAT_ID, "it marked everyone absent on day one because of a timezone bug. go")
+    await drain(h)
+    assert next(iter(fakes["db"].posts.values()))["brief"] == brief.strip()
+
+
+async def test_chat_revise_rewrites_a_waiting_draft_to_his_words(h, fakes):
+    post = fakes["db"].add_post(draft_b="")
+    fakes["nvidia"].tune_reply = "It took me 3 weeks to admit the bot was wrong.\n\nP.S. What did your first launch teach you?"
+    fakes["nvidia"].chat_reply = {"reply": "", "action": {"name": "revise", "post": None, "instruction": "open with the fact that it took me 3 weeks"}}
+    await h.on_text(CHAT_ID, "open with the fact that it took me 3 weeks")
+    assert any(t.startswith("✏️ Reworking draft A") for t in fakes["messenger"].texts())
+    await drain(h)
+    prompt = fakes["nvidia"].tune_prompts[-1]
+    assert prompt.startswith("You are reworking") and "open with the fact that it took me 3 weeks" in prompt
+    saved = fakes["db"].posts[post.id]
+    assert saved["draft_a"].startswith("It took me 3 weeks")  # "3 weeks" came from him, so the number gate lets it through
+    assert saved["research"]["his_notes"] == ["open with the fact that it took me 3 weeks"]
 
 
 async def test_topic_reply_you_pick_uses_news(h, fakes):
@@ -170,7 +194,7 @@ async def test_chat_never_publishes(h, fakes):
 # ── active-run session state (a draft in flight has priority over new requests) ──────────
 @pytest.mark.parametrize("text", ["?", "status?", "is it done?", "where's my draft?", "any update?"])
 async def test_status_query_during_active_run_reports_status_not_a_new_draft(h, fakes, text):
-    await h.on_text(CHAT_ID, "make a post about RAG in Indian startups")
+    await h.on_text(CHAT_ID, "draft: RAG in Indian startups")
     await h.on_text(CHAT_ID, text)
     assert fakes["messenger"].texts()[-1].startswith("⏳ Still on it — started")
     await drain(h)
@@ -178,8 +202,8 @@ async def test_status_query_during_active_run_reports_status_not_a_new_draft(h, 
 
 
 async def test_new_draft_request_during_active_run_does_not_start_a_second_run(h, fakes):
-    await h.on_text(CHAT_ID, "make a post about RAG in Indian startups")
-    await h.on_text(CHAT_ID, "make a post about pricing pages")
+    await h.on_text(CHAT_ID, "draft: RAG in Indian startups")
+    await h.on_text(CHAT_ID, "draft: pricing pages")
     assert fakes["messenger"].texts()[-1].startswith("⏳ Still on it — started")
     await drain(h)
     assert len(fakes["db"].posts) == 1
@@ -188,7 +212,7 @@ async def test_new_draft_request_during_active_run_does_not_start_a_second_run(h
 
 @pytest.mark.parametrize("text", ["cancel", "stop", "/cancel"])
 async def test_cancel_during_active_run_stops_it_and_confirms(h, fakes, text):
-    await h.on_text(CHAT_ID, "make a post about RAG in Indian startups")
+    await h.on_text(CHAT_ID, "draft: RAG in Indian startups")
     run = h.active_runs[CHAT_ID]
     await h.on_text(CHAT_ID, text)
     assert CHAT_ID not in h.active_runs
@@ -199,7 +223,7 @@ async def test_cancel_during_active_run_stops_it_and_confirms(h, fakes, text):
 
 
 async def test_chat_model_is_told_a_draft_is_already_running(h, fakes):
-    await h.on_text(CHAT_ID, "make a post about RAG in Indian startups")
+    await h.on_text(CHAT_ID, "draft: RAG in Indian startups")
     await h.on_text(CHAT_ID, "what about eval costs instead?")
     system = fakes["nvidia"].chat_calls[-1]["messages"][0]["content"]
     assert "A draft is already running" in system and "RAG in Indian startups" in system
@@ -208,7 +232,7 @@ async def test_chat_model_is_told_a_draft_is_already_running(h, fakes):
 
 
 async def test_active_run_clears_once_generation_finishes(h, fakes):
-    await h.on_text(CHAT_ID, "make a post about RAG in Indian startups")
+    await h.on_text(CHAT_ID, "draft: RAG in Indian startups")
     assert CHAT_ID in h.active_runs
     await drain(h)
     assert CHAT_ID not in h.active_runs
@@ -550,7 +574,7 @@ async def test_chat_prompt_carries_the_current_time(h, fakes):
 
 async def test_explicit_requests_skip_jev(h, fakes):
     h.svc.jev = jev = FakeJev(0.0)
-    await h.on_text(CHAT_ID, "make a post about eval costs")
+    await h.on_text(CHAT_ID, "draft: eval costs")
     await drain(h)
     assert jev.seen == [] and len(fakes["db"].posts) == 1
 

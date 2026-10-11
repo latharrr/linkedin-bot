@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from app.anthropic import MESSAGES_URL, AnthropicClient, AnthropicError
+from app.anthropic import MESSAGES_URL, MIN_MAX_TOKENS, AnthropicClient, AnthropicError
 
 
 async def _nosleep(_seconds: float) -> None:
@@ -47,7 +47,9 @@ async def test_sends_anthropic_shape_and_parses_reply():
     assert body["model"] == "claude-haiku-5-5"
     assert body["system"] == "voice"  # the system prompt rides as a field, not a message
     assert body["messages"] == [{"role": "user", "content": "brief"}]
-    assert body["max_tokens"] == 1200 and "temperature" not in body  # Haiku 5.5 rejects sampling params
+    assert "temperature" not in body  # Haiku 5.5 rejects sampling params
+    assert body["max_tokens"] == MIN_MAX_TOKENS  # 1,200 would leave no room once Haiku 5.5 thinks
+    assert body["output_config"] == {"effort": "medium"} and body["cache_control"] == {"type": "ephemeral"}
     assert result.text == "Clean post." and result.finish_reason == "stop"
 
 
@@ -91,3 +93,23 @@ async def test_overloaded_529_is_retried_then_serves():
     _seen, http = recorder(handler)
     result = await AnthropicClient("k", http, chat_timeout=5, sleep=_nosleep).chat("m", [])
     assert result.text == "Clean post." and len(calls) == 2
+
+
+async def test_effort_is_sent_and_large_budgets_pass_through():
+    seen, http = recorder(ok())
+    await AnthropicClient("k", http, chat_timeout=5, effort="high").chat("m", [{"role": "user", "content": "q"}], max_tokens=40000)
+    assert seen[0][1]["output_config"] == {"effort": "high"} and seen[0][1]["max_tokens"] == 40000
+
+
+async def test_window_opening_on_a_bot_turn_starts_at_his_first_message():
+    seen, http = recorder(ok())
+    await AnthropicClient("k", http, chat_timeout=5).chat(
+        "m", [{"role": "assistant", "content": "earlier reply"}, {"role": "user", "content": "q"}, {"role": "assistant", "content": ""}]
+    )
+    assert seen[0][1]["messages"] == [{"role": "user", "content": "q"}]
+
+
+async def test_refusal_raises_so_the_chain_moves_on():
+    _seen, http = recorder(ok("", stop="refusal"))
+    with pytest.raises(AnthropicError, match="refusal"):
+        await AnthropicClient("k", http, chat_timeout=5).chat("m", [{"role": "user", "content": "q"}])

@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     supabase_bucket: str = "post-images"
 
     # Who does what. Writer: outline, drafts, de-AI pass. Research: facts for the drafts.
-    writer_provider: Literal["groq", "groq2", "openrouter", "modelscope", "zenmux", "nvidia", "anthropic"] = "groq2"
+    writer_provider: Literal["groq", "groq2", "openrouter", "modelscope", "zenmux", "nvidia", "anthropic"] = "anthropic"
     # Comma-separated provider:model list tried after the primary writer ("" = no fallback).
     writer_fallbacks: str = DEFAULT_WRITER_FALLBACKS
     research_provider: Literal["browse", "tavily"] = "browse"
@@ -86,10 +86,13 @@ class Settings(BaseSettings):
     zenmux_api_key: SecretStr | None = None
     zenmux_chat_model: str = "dots-studio/dots3-note-prev"
 
-    # Anthropic (paid Claude, console.anthropic.com): the strong writer. With the key set it
-    # heads the chain automatically (services.writer_links); the rest of the chain backs it up.
+    # Anthropic (paid Claude, console.anthropic.com): the primary writer and chat model by default.
+    # Under any other WRITER_PROVIDER, a key set here still heads the chain (services.writer_links);
+    # the rest of the chain backs it up.
     anthropic_api_key: SecretStr | None = None
     anthropic_model: str = "claude-haiku-5-5"
+    # Thinking depth (Haiku 5.5 defaults to medium). Higher = better drafts, more tokens, slower.
+    anthropic_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
     anthropic_workspace_id: str = ""  # sent as anthropic-workspace-id; required for keys not scoped to one workspace
 
     # NVIDIA NIM (embeddings, FLUX images; optional writer)

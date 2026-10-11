@@ -126,7 +126,7 @@ async def test_off_niche_brief_is_refused_with_a_draft_anyway_button(h, fakes, m
 
     monkeypatch.setitem(OUTLINE_JSON, "niche_fit", False)
     monkeypatch.setitem(OUTLINE_JSON, "niche_note", "celebrity gossip has no pillar")
-    await h.on_text(CHAT_ID, "make a post about celebrity gossip")
+    await h.on_text(CHAT_ID, "draft: celebrity gossip")
     await drain(h)
     last = fakes["messenger"].texts()[-1]
     assert last.startswith("I didn't draft this: it's outside your niche (celebrity gossip has no pillar)")

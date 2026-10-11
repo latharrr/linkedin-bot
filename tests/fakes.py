@@ -170,7 +170,7 @@ class FakeNvidia:
         elif user.startswith("You fact-check a LinkedIn post"):
             self.audit_prompts.append(user)
             text = json.dumps({"unsupported": self.unsupported})
-        elif user.startswith("You are editing a LinkedIn post"):
+        elif user.startswith(("You are editing a LinkedIn post", "You are reworking a LinkedIn post")):
             self.tune_prompts.append(user)
             post = user.split("POST:\n", 1)[1].rsplit("\n\nReturn ONLY", 1)[0]
             text = self.tune_reply if self.tune_reply is not None else "Sharper hook.\n\n" + post

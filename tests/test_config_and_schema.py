@@ -17,6 +17,7 @@ BASE = dict(
     supabase_service_key="service-role-secret",
     nvidia_api_key="nvapi-secret",
     groq_api_key="gsk-secret",
+    anthropic_api_key="sk-ant-secret",
     tavily_api_key="tvly-secret",
     linkedin_api_version="202601",
 )
@@ -32,7 +33,7 @@ def test_defaults():
     assert s.nvidia_embed_model == "nvidia/nemotron-3-embed-1b"
     assert s.draft_temperature == 0.85
     assert not hasattr(s, "image_quality") and not hasattr(s, "openai_api_key")
-    assert s.anthropic_api_key is None and s.anthropic_model == "claude-haiku-5-5"
+    assert (s.writer_provider, s.anthropic_model, s.anthropic_effort) == ("anthropic", "claude-haiku-5-5", "high")
     assert s.keywords == []
 
 

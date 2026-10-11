@@ -245,7 +245,7 @@ async def test_pipeline_repair_can_be_disabled(svc, fakes):
 # ── provider selection & config ──────────────────────────────────────────────
 BASE = dict(
     telegram_bot_token="t", my_chat_id=1, supabase_url="https://x.supabase.co", supabase_service_key="s",
-    nvidia_api_key="n", linkedin_api_version="202601",
+    nvidia_api_key="n", linkedin_api_version="202601", anthropic_api_key="a",
 )
 
 
@@ -255,7 +255,7 @@ def settings(**kw) -> Settings:
 
 def test_defaults_are_groq_writer_and_browsing_research():
     s = settings(groq_api_key="g")
-    assert (s.writer_provider, s.research_provider, s.number_repair, s.groq_chat_model) == ("groq", "browse", True, "openai/gpt-oss-120b")
+    assert (s.writer_provider, s.research_provider, s.number_repair, s.groq_chat_model) == ("anthropic", "browse", True, "openai/gpt-oss-120b")
     assert s.tavily_api_key is None  # Tavily is optional now
 
 
@@ -280,7 +280,7 @@ def test_nvidia_and_tavily_only_is_valid():
 def test_build_writer_and_researcher_follow_settings():
     nv = FakeNvidia()
     groq, nvidia = nv.groq_client(), nv.client()
-    s = settings(groq_api_key="g", tavily_api_key="tv", writer_fallbacks="")
+    s = settings(writer_provider="groq", groq_api_key="g", tavily_api_key="tv", writer_fallbacks="")
     assert build_writer(s, {"groq": groq, "nvidia": nvidia})._client is groq
     assert build_writer(s.model_copy(update={"writer_provider": "nvidia"}), {"groq": groq, "nvidia": nvidia})._client is nvidia
     r = build_researcher(s, groq)

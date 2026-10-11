@@ -116,7 +116,7 @@ async def test_drafts_carry_the_rule_and_the_gate_enforces_it(h, fakes, svc, mon
 
     monkeypatch.setattr(botmod, "run_brief", fake_run_brief)
     await h.on_text(CHAT_ID, "no personal stories please")
-    await h.on_text(CHAT_ID, "make a post about eval costs")
+    await h.on_text(CHAT_ID, "draft: eval costs")
     await drain(h)
     assert briefs == ["eval costs" + NO_STORY_NOTE]
 

@@ -35,6 +35,7 @@ def settings() -> Settings:
         supabase_service_key="service-key",
         nvidia_api_key="nvapi-test",
         groq_api_key="gsk-test",
+        anthropic_api_key="sk-ant-test",
         tavily_api_key="tvly",
         linkedin_api_version="202601",
         niche_keywords="AI agents, startups, edtech",

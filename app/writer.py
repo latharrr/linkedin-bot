@@ -393,6 +393,12 @@ class Writer:
         prompt = render(load_prompt("tune"), instruction=instruction, copy_playbook=playbook(), draft=draft)
         return clean_post(await self._complete(prompt), self._unbold)
 
+    async def revise(self, draft: str, instruction: str, brief: str) -> str:
+        """A change he described in chat, in his own words. Unlike tune(), new details he
+        gives here are his own account and may go into the post."""
+        prompt = render(load_prompt("revise"), copy_playbook=playbook(), instruction=instruction, brief=brief, draft=draft)
+        return clean_post(await self._complete(prompt), self._unbold)
+
     async def audit_claims(self, post: str, brief: str, facts: list[str]) -> list[str]:
         """Step 7d: sentences about his own experience that BRIEF/FACTS don't support."""
         prompt = render(
