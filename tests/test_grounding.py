@@ -112,7 +112,7 @@ async def test_a_story_used_in_the_last_14_days_blocks_the_draft(svc, fakes):
     from app.pipeline import run_brief
 
     fakes["db"].voice["background"] = ["Shipped 15+ production internal tools in 8 weeks at PicaPool"]
-    fakes["db"].add_post(status="posted", created_at=NOW - timedelta(days=3), research={"claims_used": ["I shipped 15+ internal tools in 8 weeks at PicaPool."]})
+    fakes["db"].add_post(status="posted", created_at=datetime.now(UTC) - timedelta(days=3), research={"claims_used": ["I shipped 15+ internal tools in 8 weeks at PicaPool."]})
     fakes["nvidia"].final_text = "I shipped 15+ internal tools in 8 weeks, and none of them mattered.\n\nThe lesson came later.\n\nP.S. What would you cut?"
     with pytest.raises(Ungrounded) as exc:
         await run_brief(svc, CHAT_ID, "why internal tools beat roadmaps")

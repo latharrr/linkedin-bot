@@ -70,6 +70,20 @@ IDEA_TEXT = {  # distinct per pillar, like real pitches (similar ones are droppe
     "personal": "A laptop bought on sale, and the promise that came with it.",
     "ai_war_story": "A five-model fallback chain and the 429 that still got through.",
 }
+IDEA_TEXT_AGAIN = {  # a second, different pitch when the weighted plan picks a pillar twice (never back to back)
+    "build": "Moving every service onto one VPS cut the monthly bill and the 2am pages.",
+    "attribution": "A KPI digest that nobody opened taught me which metric actually mattered.",
+    "cs_metaphor": "Garbage collection is how a startup should prune features nobody uses.",
+    "personal": "Paying my own college fees changed how I price my time.",
+    "ai_war_story": "The eval that passed every test and still shipped a wrong answer.",
+}
+IDEA_HOOK_AGAIN = {
+    "build": "One VPS, nine services, zero sleep........",
+    "attribution": "Nobody opened the dashboard for a month........",
+    "cs_metaphor": "We kept every feature. That was the bug........",
+    "personal": "The fee receipt is still on my desk........",
+    "ai_war_story": "Every test passed. The answer was wrong........",
+}
 IDEA_HOOK = {
     "build": "The bot wrote 40 drafts. I kept one........",
     "attribution": "Our best channel was a poster nobody tracked........",
@@ -154,8 +168,9 @@ class FakeNvidia:
             slots = re.findall(r"^\d+\. (\w+)$", user.split("in this order:\n", 1)[1].split("\n\n", 1)[0], re.M)
             reply = [{**i, "pillar": slots[n % len(slots)]} if i.get("pillar") == "*" else i for n, i in enumerate(self.ideas_reply or [])]
             ideas = reply if self.ideas_reply is not None else [
-                {"pillar": key, "idea": IDEA_TEXT.get(key, f"The {key} angle."), "hook": IDEA_HOOK.get(key, f"{key} surprised everyone........"), "news": None, "fits_niche": True}
-                for key in slots
+                {"pillar": key, "idea": text_by.get(key, f"The {key} angle."), "hook": hook_by.get(key, f"{key} surprised everyone........"), "news": None, "fits_niche": True}
+                for n, key in enumerate(slots)
+                for text_by, hook_by in [(IDEA_TEXT_AGAIN, IDEA_HOOK_AGAIN) if key in slots[:n] else (IDEA_TEXT, IDEA_HOOK)]
             ]
             text = json.dumps({"ideas": ideas})
         elif user.startswith("Write the headline for this LinkedIn post's cover image"):
