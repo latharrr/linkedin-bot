@@ -60,6 +60,7 @@ from app.pipeline import (
     preview,
     regenerate,
     run_brief,
+    scrub_names,
     upload_images,
 )
 from app.research import research_corpus
@@ -1521,9 +1522,9 @@ class BotHandler:
             notes = [str(n) for n in research.get("his_notes") or []] + ([instruction] if instruction else [])
             brief = "\n".join([post.brief, *notes])
             if mode == "revise":
-                edited = airy(await self.svc.writer.revise(current, instruction, brief))
+                edited = scrub_names(airy(await self.svc.writer.revise(current, instruction, brief)))  # no company/product names, even if he typed them
             else:
-                edited = airy(await self.svc.writer.tune(current, mode, hooks))
+                edited = scrub_names(airy(await self.svc.writer.tune(current, mode, hooks)))
             corpus = research_corpus(research, brief)
             if len(unverified_numbers(edited, corpus)) > len(unverified_numbers(current, corpus)):
                 return await self.say(post.chat_id, "That edit added a number I can't verify — kept the original. Try again or ✏️ Edit.")
