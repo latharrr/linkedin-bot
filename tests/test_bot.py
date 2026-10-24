@@ -6,6 +6,7 @@ import pytest
 from telegram import CallbackQuery, Chat, Message, Update, User
 
 import bot as botmod
+from app import storybank
 from app.telegram_ui import (
     FOOTER,
     TelegramMessenger,
@@ -412,6 +413,7 @@ async def test_fallback_skips_when_brief_today_ist(svc, fakes):
 async def test_fallback_runs_when_only_yesterday_ist(svc, fakes):
     # 18:00 UTC yesterday = 23:30 IST yesterday → not today.
     fakes["db"].add_post(created_at=datetime(2026, 9, 21, 18, 0, tzinfo=UTC), status="posted")
+    fakes["db"].settings[storybank.SETTING_KEY] = storybank.dump({"entries": [{"qid": "q1", "section": "receipts", "question": "What did you build?", "answer": "I merged two n8n streams and caught a silent drop", "at": "2026-09-20T10:00:00+00:00"}], "declined": [], "sessions": 1, "updated": None})
     assert await fallback(svc, NOW) == "drafted"
     new = [r for r in fakes["db"].posts.values() if r["status"] == "awaiting_choice"]
     assert len(new) == 1  # drafts only
@@ -419,6 +421,7 @@ async def test_fallback_runs_when_only_yesterday_ist(svc, fakes):
 
 
 async def test_fallback_never_queues(svc, fakes):
+    fakes["db"].settings[storybank.SETTING_KEY] = storybank.dump({"entries": [{"qid": "q1", "section": "receipts", "question": "What did you build?", "answer": "I merged two n8n streams and caught a silent drop", "at": "2026-09-20T10:00:00+00:00"}], "declined": [], "sessions": 1, "updated": None})
     await fallback(svc, NOW)
     assert all(r["status"] == "awaiting_choice" for r in fakes["db"].posts.values())
 

@@ -122,20 +122,58 @@ async def test_keyboard_send_never_retries_a_timeout(monkeypatch):
     assert bot.calls == 1  # one attempt only
 
 
-async def test_keyboard_send_still_retries_network_error(monkeypatch):
+async def test_plain_text_send_retries_unknown_outcome(monkeypatch):
+    """Plain text without buttons is safe to re-send (a duplicate line is harmless),
+    so an unknown-outcome error IS retried there."""
+    from telegram.error import NetworkError
+
     monkeypatch.setattr(asyncio, "sleep", _nosleep)
 
     class GatewayBot(FlakyBot):
         async def send_message(self, **kwargs):
-            from telegram.error import NetworkError
             self.calls += 1
             if self.calls <= self.failures:
                 raise NetworkError("Bad Gateway")
             return None
 
     bot = GatewayBot(2)
-    await TelegramMessenger(bot).send_text(1, "confirm?", keyboard=[[("✅", "x:1")]])
+    await TelegramMessenger(bot).send_text(1, "draft ready")
     assert bot.calls == 3
+
+
+async def test_keyboard_send_retries_pre_acceptance_timeout(monkeypatch):
+    """TimedOut wrapping a CONNECT timeout: the request never left, retry is safe."""
+    import httpx
+
+    monkeypatch.setattr(asyncio, "sleep", _nosleep)
+
+    class ConnectTimeoutBot(FlakyBot):
+        async def send_message(self, **kwargs):
+            self.calls += 1
+            if self.calls <= self.failures:
+                raise TimedOut() from httpx.ConnectTimeout("connect timed out")
+            return None
+
+    bot = ConnectTimeoutBot(2)
+    await TelegramMessenger(bot).send_text(1, "confirm?", keyboard=[[("OK", "x:1")]])
+    assert bot.calls == 3
+
+
+async def test_keyboard_send_no_retry_on_bad_gateway_response(monkeypatch):
+    """A 502 is a received request with unknown processing: not retried with buttons."""
+    from telegram.error import NetworkError
+
+    monkeypatch.setattr(asyncio, "sleep", _nosleep)
+
+    class BadGatewayBot(FlakyBot):
+        async def send_message(self, **kwargs):
+            self.calls += 1
+            raise NetworkError("Bad Gateway")
+
+    bot = BadGatewayBot(5)
+    with pytest.raises(NetworkError):
+        await TelegramMessenger(bot).send_text(1, "confirm?", keyboard=[[("OK", "x:1")]])
+    assert bot.calls == 1
 
 
 async def test_photo_send_never_retries_a_timeout(monkeypatch):
@@ -189,3 +227,21 @@ async def test_expired_interactions_not_restored(svc, fakes):
     h2 = BotHandler(svc, now=lambda: NOW)
     await h2.restore_interactions()
     assert CHAT_ID not in h2.asks
+
+
+# ── fallback drafts from his story bank, never fabricates ───────────────────
+async def test_fallback_skips_without_story_bank(svc, fakes):
+    assert await fallback(svc, NOW) == "skipped_no_story"
+    assert not fakes["db"].posts  # nothing fabricated
+    assert fakes["tavily"].queries == []  # no news-stat fallback either
+
+
+async def test_fallback_brief_carries_his_story(svc, fakes):
+    from app import storybank
+    fakes["db"].settings[storybank.SETTING_KEY] = storybank.dump({"entries": [
+        {"qid": "q1", "section": "receipts", "question": "What did you build?",
+         "answer": "I merged two n8n streams and caught a silent drop", "at": "2026-09-20T10:00:00+00:00"},
+    ], "declined": [], "sessions": 1, "updated": None})
+    assert await fallback(svc, NOW) == "drafted"
+    briefs = [r["brief"] for r in fakes["db"].posts.values()]
+    assert any("merged two n8n streams" in b for b in briefs)

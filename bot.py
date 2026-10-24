@@ -1737,13 +1737,19 @@ async def fallback(svc: Services, now: datetime) -> str:
         log.info("fallback_skipped_pile", extra={"waiting": len(waiting)})
         return "skipped_pile"
     rules = Constraints.from_json(await svc.db.get_setting(SETTING_KEY.format(chat_id=chat_id)))
-    ideas = (await pitch_ideas(svc, 1, constraints=rules)).ideas  # a pillar idea (news only as raw material), within his rules
-    if not ideas:
-        await svc.messenger.send_text(chat_id, "No brief today and no idea that fits your pillars. Send a brief anytime.")
-        return "no_topic"
-    await svc.messenger.send_text(chat_id, f"No brief today — drafting this one:\n{ideas[0].text()}")
+    # His standing direction (Oct 15): posts are about his own work. The fallback
+    # therefore drafts from his story bank, day-rotating through entries. With no
+    # story on file it skips (logged, no message) instead of fabricating a
+    # news-stat draft with invented personal stakes.
+    bank = storybank.load(await svc.db.get_setting(storybank.SETTING_KEY))
+    entries = bank.get("entries") or []
+    if not entries:
+        log.info("fallback_skipped_no_story")
+        return "skipped_no_story"
+    entry = entries[now.toordinal() % len(entries)]
+    await svc.messenger.send_text(chat_id, f"No brief today — drafting from your own story:\n{entry['answer'][:150]}")
     try:
-        await run_brief(svc, chat_id, rules.brief(ideas[0].brief()))
+        await run_brief(svc, chat_id, rules.brief(f"His own work story, in his words: {entry['answer']} (asked: {entry['question']})"))
     except Exception as exc:
         log.exception("fallback_failed")
         await svc.messenger.send_text(chat_id, f"Fallback generation failed: {type(exc).__name__}: {str(exc)[:300]}")

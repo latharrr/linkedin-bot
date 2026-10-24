@@ -49,7 +49,9 @@ async def test_full_flow_requires_pick_and_time(svc, fakes):
 
 
 async def test_fallback_drafts_are_never_posted_without_gates(svc, fakes):
+    from app import storybank
     li = FakeLinkedIn()
+    fakes["db"].settings[storybank.SETTING_KEY] = storybank.dump({"entries": [{"qid": "q1", "section": "receipts", "question": "What did you build?", "answer": "I built a gate that boots the release build against a copy of the live DB", "at": "2026-09-20T10:00:00+00:00"}], "declined": [], "sessions": 1, "updated": None})
     assert await fallback(svc, T0) == "drafted"
     for days in (0, 1, 7):
         await dispatcher(fakes, li).run(T0 + timedelta(days=days))

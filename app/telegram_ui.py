@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID
 
+import httpx
 from telegram import (
     Bot,
     InlineKeyboardButton,
@@ -178,41 +179,45 @@ class TelegramMessenger:
     """Sends with a short retry on transient network failures.
 
     The VPS link to Telegram flaps (Bad Gateway / timeouts show up daily in the
-    logs): without a retry a dropped send silently loses post confirmations,
-    previews and failure alerts.
+    logs): without a retry a dropped send can lose post confirmations, previews
+    and failure alerts.
 
-    Retry policy: NetworkError (connect/protocol failure like Bad Gateway) is
-    retried for every send - the request almost certainly never reached Telegram.
-    TimedOut is a read timeout AFTER the request was sent: the message may have
-    landed. Retrying then can duplicate the message, so TimedOut is retried only
-    for plain text without buttons. A duplicated confirmation keyboard would show
-    him the same question twice (tapping the stale copy is still safe: pending
-    actions are nonce-guarded and answer "Expired"), so we accept a lost message
-    over a doubled one and never claim a send we can't confirm.
+    Retry policy, by what the error proves (PTB chains the httpx cause):
+    - Pre-acceptance (httpx ConnectError / ConnectTimeout): the request never
+      reached Telegram, so any send kind may be retried.
+    - Unknown outcome (read/write/pool timeouts, protocol errors, a 502 Bad
+      Gateway response): the message may have landed. Retried only for plain
+      text without buttons; button and photo sends are not retried, because a
+      duplicate confirmation prompt is worse than a lost one (a stale duplicate
+      tap is nonce-guarded and answers "Expired", but we still avoid showing it).
     """
 
     def __init__(self, bot: Bot) -> None:
         self._bot = bot
 
-    async def _send(self, call: Any, retry_timeout: bool) -> Any:
+    @staticmethod
+    def _pre_acceptance(exc: Exception) -> bool:
+        """True only when the request provably never reached Telegram."""
+        return isinstance(exc.__cause__, (httpx.ConnectError, httpx.ConnectTimeout))
+
+    async def _send(self, call: Any, retry_unknown: bool) -> Any:
         for attempt, delay in enumerate((0, 1, 3)):
             if delay:
                 await asyncio.sleep(delay)
             try:
                 return await call()
-            except TimedOut:  # before NetworkError: TimedOut subclasses it in PTB
-                if attempt == 2 or not retry_timeout:
-                    raise
-            except NetworkError:
+            except (NetworkError, TimedOut) as exc:
                 if attempt == 2:
+                    raise
+                if not retry_unknown and not self._pre_acceptance(exc):
                     raise
         return None  # unreachable: the last attempt either returns or raises
 
     async def send_text(self, chat_id: int, text: str, keyboard: Keyboard | None = None) -> None:
-        await self._send(lambda: self._bot.send_message(chat_id=chat_id, text=text, reply_markup=to_markup(keyboard)), retry_timeout=keyboard is None)
+        await self._send(lambda: self._bot.send_message(chat_id=chat_id, text=text, reply_markup=to_markup(keyboard)), retry_unknown=keyboard is None)
 
     async def send_photo(self, chat_id: int, photo_url: str) -> None:
-        await self._send(lambda: self._bot.send_photo(chat_id=chat_id, photo=photo_url), retry_timeout=False)
+        await self._send(lambda: self._bot.send_photo(chat_id=chat_id, photo=photo_url), retry_unknown=False)
 
     async def answer_callback(self, callback_id: str, text: str | None = None) -> None:
         await self._bot.answer_callback_query(callback_query_id=callback_id, text=text)
