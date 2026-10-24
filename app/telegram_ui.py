@@ -180,27 +180,39 @@ class TelegramMessenger:
     The VPS link to Telegram flaps (Bad Gateway / timeouts show up daily in the
     logs): without a retry a dropped send silently loses post confirmations,
     previews and failure alerts.
+
+    Retry policy: NetworkError (connect/protocol failure like Bad Gateway) is
+    retried for every send - the request almost certainly never reached Telegram.
+    TimedOut is a read timeout AFTER the request was sent: the message may have
+    landed. Retrying then can duplicate the message, so TimedOut is retried only
+    for plain text without buttons. A duplicated confirmation keyboard would show
+    him the same question twice (tapping the stale copy is still safe: pending
+    actions are nonce-guarded and answer "Expired"), so we accept a lost message
+    over a doubled one and never claim a send we can't confirm.
     """
 
     def __init__(self, bot: Bot) -> None:
         self._bot = bot
 
-    async def _send(self, call: Any) -> Any:
+    async def _send(self, call: Any, retry_timeout: bool) -> Any:
         for attempt, delay in enumerate((0, 1, 3)):
             if delay:
                 await asyncio.sleep(delay)
             try:
                 return await call()
-            except (NetworkError, TimedOut):
+            except TimedOut:  # before NetworkError: TimedOut subclasses it in PTB
+                if attempt == 2 or not retry_timeout:
+                    raise
+            except NetworkError:
                 if attempt == 2:
                     raise
         return None  # unreachable: the last attempt either returns or raises
 
     async def send_text(self, chat_id: int, text: str, keyboard: Keyboard | None = None) -> None:
-        await self._send(lambda: self._bot.send_message(chat_id=chat_id, text=text, reply_markup=to_markup(keyboard)))
+        await self._send(lambda: self._bot.send_message(chat_id=chat_id, text=text, reply_markup=to_markup(keyboard)), retry_timeout=keyboard is None)
 
     async def send_photo(self, chat_id: int, photo_url: str) -> None:
-        await self._send(lambda: self._bot.send_photo(chat_id=chat_id, photo=photo_url))
+        await self._send(lambda: self._bot.send_photo(chat_id=chat_id, photo=photo_url), retry_timeout=False)
 
     async def answer_callback(self, callback_id: str, text: str | None = None) -> None:
         await self._bot.answer_callback_query(callback_query_id=callback_id, text=text)

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import re
 import secrets
 from collections.abc import Callable, Coroutine
@@ -43,7 +44,7 @@ from app.chat import (
 )
 from app.config import Settings, get_settings
 from app.constraints import NO_STORY_NOTE, SETTING_KEY, Constraints
-from app.db import ChatState, Post
+from app.db import CHAT_STATE_TTL, ChatState, Post
 from app.grounding import has_verify_tags
 from app.ideas import Batch, Idea, pitch_ideas
 from app.jev import THRESHOLD as JEV_THRESHOLD
@@ -413,6 +414,60 @@ class BotHandler:
             return
         if raw and self.memory.load(chat_id, raw):
             log.info("chat_history_restored")
+        await self.restore_interactions()
+
+    def _interaction_snapshot(self, chat_id: int) -> dict[str, Any]:
+        ask = self.asks.get(chat_id)
+        pending = self.pending.get(chat_id)
+        choosing = self.choosing.get(chat_id)
+        offer = self.offers.get(chat_id)
+        return {
+            "saved_at": self.now().isoformat(),
+            "ask": None if ask is None else {"nonce": ask.nonce, "brief": ask.brief, "note": ask.note, "thing": ask.thing, "offer_no_story": ask.offer_no_story, "force": ask.force, "reprompt": ask.reprompt},
+            "pending": None if pending is None else {"nonce": pending.nonce, "name": pending.name, "post_ids": pending.post_ids, "when_spec": pending.when_spec, "when": pending.when.isoformat() if pending.when else None, "draft": pending.draft, "typed_ok": pending.typed_ok, "statuses": list(pending.statuses) if pending.statuses else None},
+            "choosing": None if choosing is None else {"nonce": choosing[0], "action": choosing[1], "post_ids": choosing[2]},
+            "offer": None if offer is None else {"nonce": offer[0], "topic": offer[1]},
+        }
+
+    async def save_interactions(self, chat_id: int) -> None:
+        """Persist pending asks/confirmations/picks/offers so a restart never silently
+        drops a question he was answering. Failure never blocks the update."""
+        try:
+            await self.db.set_setting(f"interaction:{chat_id}", json.dumps(self._interaction_snapshot(chat_id)))
+        except Exception:
+            log.warning("interaction_save_failed")
+
+    async def restore_interactions(self) -> None:
+        """Reload pending interactions at boot; entries older than the chat-state TTL
+        are treated as expired (the buttons would have answered "Expired" anyway)."""
+        chat_id = self.svc.settings.my_chat_id
+        try:
+            raw = await self.db.get_setting(f"interaction:{chat_id}")
+        except Exception:
+            log.warning("interaction_load_failed")
+            return
+        if not raw:
+            return
+        try:
+            snap = json.loads(raw)
+            saved = parse_ts(snap.get("saved_at"))
+            if saved is None or self.now() - saved > CHAT_STATE_TTL:
+                return
+            ask = snap.get("ask")
+            if ask:
+                self.asks[chat_id] = Ask(ask["nonce"], ask["brief"], ask["note"], thing=ask.get("thing", ""), offer_no_story=ask.get("offer_no_story", True), force=ask.get("force", False), reprompt=ask.get("reprompt", ""))
+            p = snap.get("pending")
+            if p:
+                self.pending[chat_id] = PendingAction(p["nonce"], p["name"], list(p["post_ids"]), when_spec=p.get("when_spec"), when=parse_ts(p["when"]) if p.get("when") else None, draft=p.get("draft"), typed_ok=p.get("typed_ok", True), statuses=tuple(p["statuses"]) if p.get("statuses") else None)
+            c = snap.get("choosing")
+            if c:
+                self.choosing[chat_id] = (c["nonce"], c["action"], list(c["post_ids"]))
+            o = snap.get("offer")
+            if o:
+                self.offers[chat_id] = (o["nonce"], o["topic"])
+            log.info("interactions_restored")
+        except Exception:
+            log.warning("interaction_parse_failed")
 
     async def flush_memory(self, chat_id: int) -> None:
         """Write the chat window back to settings after an update is handled."""
@@ -443,6 +498,7 @@ class BotHandler:
             log.exception("update_failed")
             await self.say(chat.id, "Something went wrong handling that. Check the bot logs.")
         finally:
+            await self.save_interactions(chat.id)
             await self.flush_memory(chat.id)
 
     # text ------------------------------------------------------------------------
@@ -792,6 +848,7 @@ class BotHandler:
         thing = needs.group(1).lower()
         self.asks[chat_id] = Ask(secrets.token_hex(4), topic, INPUT_NOTE, thing, offer_no_story=False,
                                  reprompt=f"Still need your {thing} exactly as it should appear — send it and the draft runs.")
+        await self.save_interactions(chat_id)
         await self.tell(chat_id, f"What's your {thing}? Send it exactly as it should appear — I won't make one up.")
         return True
 
@@ -997,6 +1054,7 @@ class BotHandler:
         offer = not brief.endswith(NO_STORY_NOTE) and not blank
         ask = Ask(secrets.token_hex(4), base, STAKE_NOTE, offer_no_story=offer, force=force, reprompt=REPROMPT)
         self.asks[chat_id] = ask
+        await self.save_interactions(chat_id)
         question = (
             "Reply with the missing detail and I'll put it in exactly as you send it."
             if blank else
