@@ -1,0 +1,8 @@
+Edit this LinkedIn post. These numbers are not supported by the research and must go: {numbers}
+For each one, delete the whole sentence, or rewrite it so it reads naturally without that figure. Never leave a sentence with a hole where the number was (e.g. "valued at billion").
+Keep every other word, the line breaks, the hook and the closing question exactly as they are.
+Do not add any new numbers.
+Research (the only allowed source of numbers): {research}
+POST:
+{draft}
+Return ONLY the edited post.

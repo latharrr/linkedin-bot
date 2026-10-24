@@ -1,0 +1,14 @@
+# Secrets reach the containers via env_file in docker-compose.yml, never the image.
+.env
+.git
+.claude
+.venv
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+logs/
+out/
+# personal data
+seed_posts.jsonl
+seed_posts_feed.jsonl

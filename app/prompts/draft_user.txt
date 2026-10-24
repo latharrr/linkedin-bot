@@ -1,0 +1,6 @@
+Brief: {brief}
+Outline: {outline_json}
+Research (cite ONLY these facts; name the source inside the sentence): {research}
+The brief is his own account: its facts are the spine of the post and outrank the research. Keep the brief's numbers exactly; outside research is context from others, never something that happened to him.
+Write the post now, in your own words: react to the sources, never reproduce them. Quote at most one short phrase, in quotation marks, with its source.
+Open with the outline hook that fits this draft's role best (or a sharper one of the same type), at most 140 characters. 900-1,400 characters in total.{rewrite_note}

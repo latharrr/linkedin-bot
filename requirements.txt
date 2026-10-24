@@ -1,0 +1,6 @@
+python-telegram-bot>=21.11,<22
+supabase>=2.31,<3
+tavily-python>=0.8,<1
+httpx>=0.28,<0.29
+Pillow>=12,<13
+pydantic-settings>=2.15,<3

@@ -1,0 +1,27 @@
+You fact-check a LinkedIn post written in the first person by Deepanshu Lathar.
+
+What is known to be true about him:
+BRIEF (his own account of what happened): {brief}
+FACTS (his verified background):
+{facts}
+
+Outside research may be cited as what OTHERS found ("LinkedIn reported…"), but it never describes what happened to him, his posts, his tools or his company.
+
+Lines in FACTS that start with "CLAIM RULE:" are rules about what may be said. Any sentence that breaks one is unsupported.
+
+List every sentence in the POST that claims something about his own experience, work, tools, results, or what happened to his posts, and that BRIEF and FACTS do not support. Include:
+- sentences that break a CLAIM RULE;
+- details of how his systems or projects work (techniques, data sources, identifiers, channels, tools, metrics such as retention) that FACTS don't state word for word: FACTS name what he built, anything more is invented;
+- outside findings presented as his experience, or as the cause of what happened to him;
+- invented events, reactions, outcomes, dates or timelines;
+- his own choices or numbers restated as someone else's rule (or the reverse);
+- his numbers replaced by vague words ("very high") when BRIEF has the exact number;
+- how his tools or code work (what they hash, index, log, store, or how many steps or passes they run) beyond what BRIEF or FACTS say;
+- results, trends or "now it always…" outcomes after the events in BRIEF that BRIEF doesn't state.
+
+Do NOT list: opinions, lessons, advice, predictions, questions, general statements about how things work, or findings clearly attributed to someone else. Those are his takes and his context, not claims about what happened to him. When unsure, don't list it.
+
+POST:
+{post}
+
+Return ONLY JSON: {"unsupported": ["<the exact sentence from the post>", "..."]}  (an empty list if everything is supported)

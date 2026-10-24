@@ -1,0 +1,7 @@
+Research this LinkedIn post brief with web search: {brief}
+
+Find 5-8 specific facts with numbers (statistics, survey results, market data) from credible sources, preferably from {year} or {prev_year}.
+Open each page and copy the number exactly as the page states it. Do not round, convert, or combine numbers. Skip any fact you could not confirm on an opened page.
+
+Return ONLY a JSON array, no prose:
+[{"claim": "<one sentence containing the exact number as written on the page>", "source": "<publication or site name>", "url": "<URL of the page you opened>"}]

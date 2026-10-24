@@ -1,0 +1,26 @@
+# /etc/systemd/system/linkedin-bot.service
+# sudo systemctl daemon-reload && sudo systemctl enable --now linkedin-bot
+[Unit]
+Description=LinkedIn daily-post Telegram bot (long polling)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=linkedinbot
+Group=linkedinbot
+WorkingDirectory=/opt/linkedin-bot
+# Settings are read from /opt/linkedin-bot/.env (chmod 600, owned by linkedinbot).
+ExecStart=/opt/linkedin-bot/.venv/bin/python bot.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/linkedin-bot/logs
+
+[Install]
+WantedBy=multi-user.target
