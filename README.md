@@ -35,7 +35,7 @@ Read-only questions ("what's queued", "any drafts", "dashboard", "ideas", "statu
 | `app/research.py` · `app/news.py` · `app/brightdata.py` | Research with page grounding (Groq browsing, Bright Data, Tavily) · NewsData headlines |
 | `app/groq.py` · `app/openrouter.py` · `app/nvidia.py` | Writer and browsing (Groq), the free fallback chain, embeddings and FLUX images (NVIDIA) |
 
-Deployment: two containers from one image (`docker-compose.yml`), `bot` (the Telegram bot) and `scheduler` (the dispatcher loop plus the 08:00 nudge and 14:00 fallback). Secrets reach them through `env_file: .env`, never the image. Logs are in `./logs`.
+Deployment: two containers from one image (`docker-compose.yml`), `bot` (the Telegram bot) and `scheduler` (the dispatcher loop plus the 14:00 fallback; the 08:00 daily topic nudge was retired on Oct 26 - daily drafting is handled by the Instinct pipeline, which queues reviewed posts directly via `scripts/enqueue.py`, so the bot no longer asks "what's today's topic?" every morning). Secrets reach them through `env_file: .env`, never the image. Logs are in `./logs`.
 
 ## Behaviour rules
 
