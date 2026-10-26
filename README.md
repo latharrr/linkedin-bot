@@ -9,7 +9,7 @@ A Telegram-controlled LinkedIn posting system for one person, run as an agentic 
 | **Models** | Writer provider is a setting (`app/config.py` defaults to Anthropic); Groq, OpenRouter free models and NVIDIA (images, embeddings) are also wired in, with a fallback chain and a per-day spend cap |
 | **Tests** | About 260 test functions in `tests/`, run in a Docker test image with network access blocked; lint with ruff. No hosted CI workflow in this repo |
 | **Design focus** | Human approval gate, a deterministic grounding check on every draft, exactly-once scheduling, cause-based send retries |
-| **My role** | Everything: product, prompts, pipeline, scheduler, publisher layer, deployment |
+| **Scope** | Telegram bot, generation pipeline, scheduler, publisher layer, Docker deployment |
 
 ```
 you ─► Telegram ─► bot.py (long polling, chat agent)          dispatcher.py (scheduler, every 5 min)
