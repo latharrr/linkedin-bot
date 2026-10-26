@@ -1,6 +1,15 @@
 # LinkedIn posting bot
 
-A Telegram-controlled LinkedIn posting system for one person, run as an agentic chat. You ask for ideas or a post. The bot researches it and writes one draft plus one image in your voice. You tune or approve it and pick a time, and the scheduler posts it. A post reaches the queue in one of two ways: approved in Telegram with your explicit ✅ or button tap, or enqueued directly via `scripts/enqueue.py` after review outside Telegram - since Oct 25 that includes Instinct's standing authorization to draft, self-review and queue your daily posts without asking you each day. **Inside Telegram, nothing is published, scheduled, moved or deleted without your explicit ✅ or button tap.**
+A Telegram-controlled LinkedIn posting system for one person, run as an agentic chat. You ask for ideas or a post. The bot researches it and writes one draft plus one image in your voice. You tune or approve it and pick a time, and the scheduler posts it. A post reaches the queue in one of two ways: approved in Telegram with your explicit ✅ or button tap, or enqueued with `scripts/enqueue.py` after the owner has reviewed it outside Telegram. **Inside Telegram, nothing is published, scheduled, moved or deleted without your explicit ✅ or button tap.**
+
+| | |
+|---|---|
+| **Status** | Personal tool built and run by its author. Single-user by design; the multi-user path is a roadmap, not built |
+| **Stack** | Python, Telegram Bot API, Supabase (Postgres + Storage), LinkedIn Posts API, Docker Compose |
+| **Models** | Writer provider is a setting (`app/config.py` defaults to Anthropic); Groq, OpenRouter free models and NVIDIA (images, embeddings) are also wired in, with a fallback chain and a per-day spend cap |
+| **Tests** | About 260 test functions in `tests/`, run in a Docker test image with network access blocked; lint with ruff. No hosted CI workflow in this repo |
+| **Design focus** | Human approval gate, a deterministic grounding check on every draft, exactly-once scheduling, cause-based send retries |
+| **My role** | Everything: product, prompts, pipeline, scheduler, publisher layer, deployment |
 
 ```
 you ─► Telegram ─► bot.py (long polling, chat agent)          dispatcher.py (scheduler, every 5 min)
@@ -35,11 +44,11 @@ Read-only questions ("what's queued", "any drafts", "dashboard", "ideas", "statu
 | `app/research.py` · `app/news.py` · `app/brightdata.py` | Research with page grounding (Groq browsing, Bright Data, Tavily) · NewsData headlines |
 | `app/groq.py` · `app/openrouter.py` · `app/nvidia.py` | Writer and browsing (Groq), the free fallback chain, embeddings and FLUX images (NVIDIA) |
 
-Deployment: two containers from one image (`docker-compose.yml`), `bot` (the Telegram bot) and `scheduler` (the dispatcher loop plus the 14:00 fallback; the 08:00 daily topic nudge was retired on Oct 26 - daily drafting is handled by the Instinct pipeline, which queues reviewed posts directly via `scripts/enqueue.py`, so the bot no longer asks "what's today's topic?" every morning). Secrets reach them through `env_file: .env`, never the image. Logs are in `./logs`.
+Deployment: two containers from one image (`docker-compose.yml`), `bot` (the Telegram bot) and `scheduler` (the dispatcher loop plus the 14:00 fallback; the 08:00 daily topic nudge was retired on Oct 26; drafts for the daily slot are prepared outside the bot and queued with `scripts/enqueue.py`, so the bot no longer asks "what's today's topic?" every morning). Secrets reach them through `env_file: .env`, never the image. Logs are in `./logs`.
 
 ## Behaviour rules
 
-- **In Telegram, nothing changes without your ✅.** Chat actions (schedule, reschedule, unschedule, discard) and inline buttons alike. The model only *proposes*; the bot asks, and the bot executes. The one path around the buttons is `scripts/enqueue.py`, which queues a post already reviewed outside Telegram - either approved by you in chat (the pre-Oct 25 flow) or self-reviewed by Instinct under your standing Oct 25 authorization for the daily posts. It never posts directly and never moves or deletes anything.
+- **In Telegram, nothing changes without your ✅.** Chat actions (schedule, reschedule, unschedule, discard) and inline buttons alike. The model only *proposes*; the bot asks, and the bot executes. The one path around the buttons is `scripts/enqueue.py`, which queues a post that was already reviewed outside Telegram. It never posts directly and never moves or deletes anything.
 - **🗑 Discard, ↩️ Unschedule and ⚡ Post now always ask ✅/✖ first**, and so does ⚡ Now in the time picker. The question names the post and its time. ✖ leaves the post and its buttons exactly as they were. (Why: a single stray 🗑 tap on a "Queued ✓" message once killed a scheduled post.)
 - **"Post it now" typed in chat is refused.** Posting immediately is button-only.
 - **Bulk scope follows your words, not the model's.** "Discard all" means waiting drafts only. Scheduled posts are included only when you say "scheduled", "queued" or "everything".
@@ -135,7 +144,7 @@ The rest have defaults; see `.env.example`.
 
 ### Enqueue an approved draft directly
 
-When a post was reviewed and approved outside Telegram (in WhatsApp with Instinct, say), put it straight into the publish queue:
+When a post was reviewed and approved outside Telegram, put it straight into the publish queue:
 
 ```
 python scripts/enqueue.py post.txt image.png "2026-10-25 09:00" "topic label"
