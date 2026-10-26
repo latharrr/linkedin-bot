@@ -2,7 +2,7 @@
 
 A Telegram-controlled LinkedIn posting system for one person, run as an agentic chat. You ask for ideas or a post. The bot researches it and writes one draft plus one image in your voice. You tune or approve it and pick a time, and the scheduler posts it. A post reaches the queue in one of two ways: approved in Telegram with your explicit ✅ or button tap, or enqueued with `scripts/enqueue.py` after the owner has reviewed it outside Telegram. **Inside Telegram, nothing is published, scheduled, moved or deleted without your explicit ✅ or button tap.**
 
-| | |
+| At a glance | |
 |---|---|
 | **Status** | Personal tool built and run by its author. Single-user by design; the multi-user path is a roadmap, not built |
 | **Stack** | Python, Telegram Bot API, Supabase (Postgres + Storage), LinkedIn Posts API, Docker Compose |
