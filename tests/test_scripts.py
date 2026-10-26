@@ -61,8 +61,11 @@ def test_authorize_url_matches_spec():
 def test_crontab_matches_spec():
     cron = (ROOT / "deploy" / "crontab.txt").read_text()
     assert "CRON_TZ=Asia/Kolkata" in cron
-    for schedule, cmd in [("*/5 * * * *", "dispatcher.py"), ("0 8 * * *", "bot.py --nudge"), ("0 14 * * *", "bot.py --fallback"), ("0 9 * * 1", "bot.py --token-check")]:
+    for schedule, cmd in [("*/5 * * * *", "dispatcher.py"), ("0 14 * * *", "bot.py --fallback"), ("0 9 * * 1", "bot.py --token-check")]:
         assert any(line.startswith(schedule) and cmd in line for line in cron.splitlines()), cmd
+    # The daily nudge was retired 2026-10-26 (Instinct pipeline owns daily drafting):
+    # no ACTIVE cron line may schedule it.
+    assert not any(line.startswith("0 8") and "--nudge" in line for line in cron.splitlines())
 
 
 # ── Bright Data scraper (scripts/scrape_linkedin_posts.py) ───────────────────

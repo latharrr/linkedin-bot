@@ -56,7 +56,9 @@ LinkedIn tokens live in the `settings` table (`linkedin_access_token`, `linkedin
 ```
 CRON_TZ=Asia/Kolkata
 */5 * * * *  dispatcher.py          # every 5 min: publish due posts
-0 8 * * *    bot.py --nudge         # 8:00 AM IST: "What's today's topic?"
+# 0 8 nudge retired 2026-10-26: daily drafting is owned by the Instinct pipeline
+# (his Oct 25 direction: draft, review and post without being asked each day).
+# bot.py --nudge stays available for manual use.
 0 14 * * *   bot.py --fallback      # 2:00 PM IST: draft from news if no brief today (IST date)
 0 9 * * 1    bot.py --token-check   # weekly: warn if LinkedIn token older than 50 days
 ```
