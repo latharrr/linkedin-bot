@@ -1,6 +1,6 @@
 # LinkedIn posting bot
 
-A Telegram-controlled LinkedIn posting system for one person, run as an agentic chat. You ask for ideas or a post. The bot researches it and writes one draft plus one image in your voice. You tune or approve it and pick a time, and the scheduler posts it. **Nothing is published, scheduled, moved or deleted without your explicit ✅ or button tap.**
+A Telegram-controlled LinkedIn posting system for one person, run as an agentic chat. You ask for ideas or a post. The bot researches it and writes one draft plus one image in your voice. You tune or approve it and pick a time, and the scheduler posts it. A post reaches the queue in one of two ways: approved in Telegram with your explicit ✅ or button tap, or enqueued directly via `scripts/enqueue.py` after review outside Telegram - since Oct 25 that includes Instinct's standing authorization to draft, self-review and queue your daily posts without asking you each day. **Inside Telegram, nothing is published, scheduled, moved or deleted without your explicit ✅ or button tap.**
 
 ```
 you ─► Telegram ─► bot.py (long polling, chat agent)          dispatcher.py (scheduler, every 5 min)
@@ -35,22 +35,23 @@ Read-only questions ("what's queued", "any drafts", "dashboard", "ideas", "statu
 | `app/research.py` · `app/news.py` · `app/brightdata.py` | Research with page grounding (Groq browsing, Bright Data, Tavily) · NewsData headlines |
 | `app/groq.py` · `app/openrouter.py` · `app/nvidia.py` | Writer and browsing (Groq), the free fallback chain, embeddings and FLUX images (NVIDIA) |
 
-Deployment: two containers from one image (`docker-compose.yml`), `bot` (the Telegram bot) and `scheduler` (the dispatcher loop plus the 08:00 nudge and 14:00 fallback). Secrets reach them through `env_file: .env`, never the image. Logs are in `./logs`.
+Deployment: two containers from one image (`docker-compose.yml`), `bot` (the Telegram bot) and `scheduler` (the dispatcher loop plus the 14:00 fallback; the 08:00 daily topic nudge was retired on Oct 26 - daily drafting is handled by the Instinct pipeline, which queues reviewed posts directly via `scripts/enqueue.py`, so the bot no longer asks "what's today's topic?" every morning). Secrets reach them through `env_file: .env`, never the image. Logs are in `./logs`.
 
 ## Behaviour rules
 
-- **Nothing changes without your ✅.** Chat actions (schedule, reschedule, unschedule, discard) and inline buttons alike. The model only *proposes*; the bot asks, and the bot executes.
+- **In Telegram, nothing changes without your ✅.** Chat actions (schedule, reschedule, unschedule, discard) and inline buttons alike. The model only *proposes*; the bot asks, and the bot executes. The one path around the buttons is `scripts/enqueue.py`, which queues a post already reviewed outside Telegram - either approved by you in chat (the pre-Oct 25 flow) or self-reviewed by Instinct under your standing Oct 25 authorization for the daily posts. It never posts directly and never moves or deletes anything.
 - **🗑 Discard, ↩️ Unschedule and ⚡ Post now always ask ✅/✖ first**, and so does ⚡ Now in the time picker. The question names the post and its time. ✖ leaves the post and its buttons exactly as they were. (Why: a single stray 🗑 tap on a "Queued ✓" message once killed a scheduled post.)
 - **"Post it now" typed in chat is refused.** Posting immediately is button-only.
 - **Bulk scope follows your words, not the model's.** "Discard all" means waiting drafts only. Scheduled posts are included only when you say "scheduled", "queued" or "everything".
 - **Clarify, don't guess.** If a topic matches several posts, you get a pick list of just those. If it matches none, the bot says so and offers 📝 what's waiting or ✍️ a new draft; it never invents a reference. An unclear destructive scope gets scope buttons, and a vague or missing time gets hour buttons (9 AM first). The bot doesn't over-ask: one obvious candidate goes straight to ✅/✖, and read-only questions never need a clarification.
 - **Typed yes/no answers the pending ✅/✖ directly**, without another model turn ("yes", "yep", "do it", "no", "keep it"). A "yes" with nothing pending gets "Yes to what?". A plain "ok" is chat.
+- **Filler never answers a question the bot asked.** When the bot is waiting for a detail only you have (your referral code, your real experience), a low-signal reply like "hey" or "ok" gets the question asked again — it is never used as the answer. A single word that could be the value (a code, a name) still counts.
 - **Inputs only you know are asked for, never invented.** "…and add my referral code" without the code gets "What's your referral code?".
 - Past times roll forward to the next valid slot. "Tune", "new image" and "show" need no confirmation.
 
 ## Grounding
 
-- **Every claim about your history, employers, metrics or timelines must trace to the brief, your background profile, your story bank or your own answer.** Anything that doesn't gets one grounded rewrite. If it still doesn't trace, **the draft is held back**: nothing is saved or sent, and the bot asks you for the real detail ("✋ I held this draft back instead of guessing…"). You can answer, tap ✍️ Write it without a personal story, or tap ✖ Drop it. A ⚠ warning is never shipped instead.
+- **Every claim about your history, employers, metrics or timelines must trace to the brief, your background profile, your story bank or your own answer.** Anything that doesn't gets one grounded rewrite. If it still doesn't trace, **the draft is held back**: nothing is saved or sent, and the bot asks you for the real detail ("✋ I held this draft back instead of guessing…"). That question stays in the chat's memory, so the bot remembers it asked. You can answer, tap ✍️ Write it without a personal story, or tap ✖ Drop it. A ⚠ warning is never shipped instead.
 - **Third-party numbers nobody can verify are tagged `[verify]`** in the text, never stated as fact. A draft with a `[verify]` tag can't be scheduled until you resolve it.
 - **14-day no-repeat.** Each draft logs the claims it made about you. A story, metric or achievement used in a post from the last 14 days (posted or scheduled) is blocked; the writer is told to reframe instead.
 - **The background profile is context, never copy.** A line that copies 6+ words in a row from your profile card (the credentials paragraph, say) is blocked. The personal stake must be one specific anecdote tied to this post's idea.
@@ -131,6 +132,16 @@ Copy `.env.example` to `.env` (`chmod 600`). `.env` is gitignored and never bake
 - `TAVILY_API_KEY`, `BRIGHTDATA_API_KEY`: research backups.
 
 The rest have defaults; see `.env.example`.
+
+### Enqueue an approved draft directly
+
+When a post was reviewed and approved outside Telegram (in WhatsApp with Instinct, say), put it straight into the publish queue:
+
+```
+python scripts/enqueue.py post.txt image.png "2026-10-25 09:00" "topic label"
+```
+
+It uploads the image, inserts one `queued` row (chosen A, time read as IST) and prints the row id and the SHA-256 of the stored text so you can verify the enqueue. The dispatcher's normal exactly-once claim publishes it at the slot. Nothing here posts directly.
 
 ### Tests and lint
 
@@ -278,7 +289,7 @@ Places where SPEC was silent or ambiguous, or where following it literally was u
 2. **Outline stored for regenerate.** Regen re-runs steps 6–11 only, which need the outline, and the schema has no outline column. So it's stored at `posts.research.outline`. No schema change was needed. Regen reuses the stored research and outline and re-fetches few-shot examples through the stored `topic_embedding`.
 3. **`topic` column** holds the outline's one-line insight (falls back to the brief). It's shown as "recently covered" in later outlines.
 4. **Sub-template vs fixed roles.** The outline picks one sub-template. It refines whichever role it belongs to (a `story_*` template shapes Draft A; `contrarian_*` or `insight_list` shapes Draft B). The other draft keeps its base role. An unknown template falls back to `story_cold_open`.
-5. **Fallback topic.** `NICHE_KEYWORDS` rotate by IST day. The top Tavily news result from the past week becomes the brief (with its source). No extra chat call is made to pick it.
+5. **Fallback topic.** `NICHE_KEYWORDS` rotate by IST day. The top Tavily news result from the past week becomes the brief (with its source). No extra chat call is made to pick it. The fallback also skips when 3 or more drafts are already waiting unchosen, so /drafts never piles up.
 6. **Research depth.** Tavily uses `search_depth="advanced"` (2 credits, about ₹1.3) for better stats. Change it in `app/research.py` to save cost.
 
 **Number verification (§5.1 step 8)**

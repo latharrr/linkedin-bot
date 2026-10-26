@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import re
 import secrets
 from collections.abc import Callable, Coroutine
@@ -36,13 +37,14 @@ from app.chat import (
     is_no,
     is_status_query,
     is_yes,
+    low_signal_answer,
     parse_draft_request,
     short_label,
     wants_bot_to_pick,
 )
 from app.config import Settings, get_settings
 from app.constraints import NO_STORY_NOTE, SETTING_KEY, Constraints
-from app.db import ChatState, Post
+from app.db import CHAT_STATE_TTL, ChatState, Post
 from app.grounding import has_verify_tags
 from app.ideas import Batch, Idea, pitch_ideas
 from app.jev import THRESHOLD as JEV_THRESHOLD
@@ -233,6 +235,9 @@ STAKE_NOTE = "\n\nHis own experience with this, in his words (the only personal 
 INPUT_NOTE = "\n\nHis {thing}, to use exactly as given (never change or invent it): {answer}"
 REF_TAG = re.compile(r"[ \t]*[\[(]?\bref[:\s]+[0-9a-f]{6,}[\])]?", re.IGNORECASE)
 TUNE_LABELS = {"short": "✂️ Shortening", "hook": "🎣 Rewriting the hook of", "bold": "🔥 Sharpening"}
+REPROMPT = "That still needs your real detail — a line or two about what you actually did, saw or paid for — before I write it."
+FALLBACK_MAX_WAITING = 3  # stop piling unviewed fallback drafts into /drafts
+
 ASK_TOPIC = "What should the post be about? Send a topic or a link — or say \"you pick\" and I'll draft from today's news."
 CHAT_DOWN = "I couldn't reach the chat model just now. To start drafts anyway, say: draft: <topic>."
 REAUTH_STEPS = (
@@ -306,6 +311,7 @@ class Ask:
     thing: str = ""
     offer_no_story: bool = True
     force: bool = False  # he already chose "✍️ Draft anyway" for an off-niche brief
+    reprompt: str = ""  # sent again when his reply can't be the answer ("hey")
 
 
 @dataclass
@@ -408,6 +414,60 @@ class BotHandler:
             return
         if raw and self.memory.load(chat_id, raw):
             log.info("chat_history_restored")
+        await self.restore_interactions()
+
+    def _interaction_snapshot(self, chat_id: int) -> dict[str, Any]:
+        ask = self.asks.get(chat_id)
+        pending = self.pending.get(chat_id)
+        choosing = self.choosing.get(chat_id)
+        offer = self.offers.get(chat_id)
+        return {
+            "saved_at": self.now().isoformat(),
+            "ask": None if ask is None else {"nonce": ask.nonce, "brief": ask.brief, "note": ask.note, "thing": ask.thing, "offer_no_story": ask.offer_no_story, "force": ask.force, "reprompt": ask.reprompt},
+            "pending": None if pending is None else {"nonce": pending.nonce, "name": pending.name, "post_ids": pending.post_ids, "when_spec": pending.when_spec, "when": pending.when.isoformat() if pending.when else None, "draft": pending.draft, "typed_ok": pending.typed_ok, "statuses": list(pending.statuses) if pending.statuses else None},
+            "choosing": None if choosing is None else {"nonce": choosing[0], "action": choosing[1], "post_ids": choosing[2]},
+            "offer": None if offer is None else {"nonce": offer[0], "topic": offer[1]},
+        }
+
+    async def save_interactions(self, chat_id: int) -> None:
+        """Persist pending asks/confirmations/picks/offers so a restart never silently
+        drops a question he was answering. Failure never blocks the update."""
+        try:
+            await self.db.set_setting(f"interaction:{chat_id}", json.dumps(self._interaction_snapshot(chat_id)))
+        except Exception:
+            log.warning("interaction_save_failed")
+
+    async def restore_interactions(self) -> None:
+        """Reload pending interactions at boot; entries older than the chat-state TTL
+        are treated as expired (the buttons would have answered "Expired" anyway)."""
+        chat_id = self.svc.settings.my_chat_id
+        try:
+            raw = await self.db.get_setting(f"interaction:{chat_id}")
+        except Exception:
+            log.warning("interaction_load_failed")
+            return
+        if not raw:
+            return
+        try:
+            snap = json.loads(raw)
+            saved = parse_ts(snap.get("saved_at"))
+            if saved is None or self.now() - saved > CHAT_STATE_TTL:
+                return
+            ask = snap.get("ask")
+            if ask:
+                self.asks[chat_id] = Ask(ask["nonce"], ask["brief"], ask["note"], thing=ask.get("thing", ""), offer_no_story=ask.get("offer_no_story", True), force=ask.get("force", False), reprompt=ask.get("reprompt", ""))
+            p = snap.get("pending")
+            if p:
+                self.pending[chat_id] = PendingAction(p["nonce"], p["name"], list(p["post_ids"]), when_spec=p.get("when_spec"), when=parse_ts(p["when"]) if p.get("when") else None, draft=p.get("draft"), typed_ok=p.get("typed_ok", True), statuses=tuple(p["statuses"]) if p.get("statuses") else None)
+            c = snap.get("choosing")
+            if c:
+                self.choosing[chat_id] = (c["nonce"], c["action"], list(c["post_ids"]))
+            o = snap.get("offer")
+            if o:
+                self.offers[chat_id] = (o["nonce"], o["topic"])
+            log.info("interactions_restored")
+        except Exception:
+            log.warning("interaction_parse_failed")
 
     async def flush_memory(self, chat_id: int) -> None:
         """Write the chat window back to settings after an update is handled."""
@@ -438,6 +498,7 @@ class BotHandler:
             log.exception("update_failed")
             await self.say(chat.id, "Something went wrong handling that. Check the bot logs.")
         finally:
+            await self.save_interactions(chat.id)
             await self.flush_memory(chat.id)
 
     # text ------------------------------------------------------------------------
@@ -476,6 +537,8 @@ class BotHandler:
                 del self.asks[chat_id]
                 return await self.tell(chat_id, "Okay — dropped it. Nothing was saved.")
             if not text.rstrip().endswith("?") and not is_yes(text):  # a question means he moved on; the ask waits
+                if low_signal_answer(text):  # "hey" is not the detail we asked for: re-ask, never build on it
+                    return await self.say(chat_id, ask.reprompt or REPROMPT)
                 del self.asks[chat_id]
                 self.memory.add(chat_id, "user", text)
                 return await self.start_generation(chat_id, ask.brief + ask.note.format(answer=text[:600], thing=ask.thing), long_ok=True, force=ask.force)
@@ -783,7 +846,9 @@ class BotHandler:
         if needs is None or HAS_VALUE.search(said):
             return False
         thing = needs.group(1).lower()
-        self.asks[chat_id] = Ask(secrets.token_hex(4), topic, INPUT_NOTE, thing, offer_no_story=False)
+        self.asks[chat_id] = Ask(secrets.token_hex(4), topic, INPUT_NOTE, thing, offer_no_story=False,
+                                 reprompt=f"Still need your {thing} exactly as it should appear — send it and the draft runs.")
+        await self.save_interactions(chat_id)
         await self.tell(chat_id, f"What's your {thing}? Send it exactly as it should appear — I won't make one up.")
         return True
 
@@ -987,8 +1052,9 @@ class BotHandler:
         base = brief.split(STAKE_NOTE.split("{", 1)[0], 1)[0].removesuffix(NO_STORY_NOTE)
         blank = any(why == "a blank only you can fill" for why in problems.values())
         offer = not brief.endswith(NO_STORY_NOTE) and not blank
-        ask = Ask(secrets.token_hex(4), base, STAKE_NOTE, offer_no_story=offer, force=force)
+        ask = Ask(secrets.token_hex(4), base, STAKE_NOTE, offer_no_story=offer, force=force, reprompt=REPROMPT)
         self.asks[chat_id] = ask
+        await self.save_interactions(chat_id)
         question = (
             "Reply with the missing detail and I'll put it in exactly as you send it."
             if blank else
@@ -997,7 +1063,7 @@ class BotHandler:
         )
         text = f"✋ I held this draft back instead of guessing. It kept saying things I can't back up:\n{problems.text()}\n\n{question}"
         keyboard = ([[("✍️ Write it without a personal story", f"ask:none:{ask.nonce}")]] if offer else []) + [[("✖ Drop it", f"ask:drop:{ask.nonce}")]]
-        self.memory.add(chat_id, "assistant", f"(asked him for his real experience with: {base[:120]}?)")
+        self.memory.add(chat_id, "assistant", text)  # keep the real question in context: without it the chat forgets and loops
         await self.say(chat_id, text, keyboard)
 
     async def on_ask_button(self, chat_id: int, data: str) -> str:
@@ -1666,14 +1732,24 @@ async def fallback(svc: Services, now: datetime) -> str:
     if await svc.db.any_post_since(ist_day_start(now)):
         log.info("fallback_skipped_brief_exists")
         return "skipped"
+    waiting = await svc.db.posts_with_status(chat_id, "awaiting_choice", FALLBACK_MAX_WAITING)
+    if len(waiting) >= FALLBACK_MAX_WAITING:
+        log.info("fallback_skipped_pile", extra={"waiting": len(waiting)})
+        return "skipped_pile"
     rules = Constraints.from_json(await svc.db.get_setting(SETTING_KEY.format(chat_id=chat_id)))
-    ideas = (await pitch_ideas(svc, 1, constraints=rules)).ideas  # a pillar idea (news only as raw material), within his rules
-    if not ideas:
-        await svc.messenger.send_text(chat_id, "No brief today and no idea that fits your pillars. Send a brief anytime.")
-        return "no_topic"
-    await svc.messenger.send_text(chat_id, f"No brief today — drafting this one:\n{ideas[0].text()}")
+    # His standing direction (Oct 15): posts are about his own work. The fallback
+    # therefore drafts from his story bank, day-rotating through entries. With no
+    # story on file it skips (logged, no message) instead of fabricating a
+    # news-stat draft with invented personal stakes.
+    bank = storybank.load(await svc.db.get_setting(storybank.SETTING_KEY))
+    entries = bank.get("entries") or []
+    if not entries:
+        log.info("fallback_skipped_no_story")
+        return "skipped_no_story"
+    entry = entries[now.toordinal() % len(entries)]
+    await svc.messenger.send_text(chat_id, f"No brief today — drafting from your own story:\n{entry['answer'][:150]}")
     try:
-        await run_brief(svc, chat_id, rules.brief(ideas[0].brief()))
+        await run_brief(svc, chat_id, rules.brief(f"His own work story, in his words: {entry['answer']} (asked: {entry['question']})"))
     except Exception as exc:
         log.exception("fallback_failed")
         await svc.messenger.send_text(chat_id, f"Fallback generation failed: {type(exc).__name__}: {str(exc)[:300]}")

@@ -92,6 +92,16 @@ def wants_bot_to_pick(text: str) -> bool:
     return bool(_YOU_PICK.match(text.strip()))
 
 
+_FILLER = re.compile(r"^(?:hi+|hey+|hello+|yo|hmm*|hm+|ok+|okay|kk|k|test|lol|[.!?]+)[\s.!]*$", re.IGNORECASE)
+
+
+def low_signal_answer(text: str) -> bool:
+    """True when a reply can't be the detail an open ask is waiting for ("hey", "ok"):
+    filler only. A single word can be the answer (a code, a name), so length alone
+    never disqualifies it. Generation must never treat filler as his answer."""
+    return bool(_FILLER.match(text.strip()))
+
+
 class ChatMemory:
     """Last few messages per chat so "draft that" and "yes, do it" have context.
     The bot persists snapshots to settings (chat_history:<chat_id>): a restart
