@@ -1,6 +1,6 @@
 # LinkedIn posting bot
 
-A Telegram-controlled LinkedIn posting system for one person, run as an agentic chat. You ask for ideas or a post. The bot researches it and writes one draft plus one image in your voice. You tune or approve it and pick a time, and the scheduler posts it. **Nothing is published, scheduled, moved or deleted without your explicit ✅ or button tap.**
+A Telegram-controlled LinkedIn posting system for one person, run as an agentic chat. You ask for ideas or a post. The bot researches it and writes one draft plus one image in your voice. You tune or approve it and pick a time, and the scheduler posts it. A post reaches the queue in one of two ways: approved in Telegram with your explicit ✅ or button tap, or reviewed and approved outside Telegram (with Instinct on WhatsApp, say) and enqueued directly via `scripts/enqueue.py`. **Inside Telegram, nothing is published, scheduled, moved or deleted without your explicit ✅ or button tap.**
 
 ```
 you ─► Telegram ─► bot.py (long polling, chat agent)          dispatcher.py (scheduler, every 5 min)
@@ -39,7 +39,7 @@ Deployment: two containers from one image (`docker-compose.yml`), `bot` (the Tel
 
 ## Behaviour rules
 
-- **Nothing changes without your ✅.** Chat actions (schedule, reschedule, unschedule, discard) and inline buttons alike. The model only *proposes*; the bot asks, and the bot executes.
+- **In Telegram, nothing changes without your ✅.** Chat actions (schedule, reschedule, unschedule, discard) and inline buttons alike. The model only *proposes*; the bot asks, and the bot executes. The one path around the buttons is `scripts/enqueue.py`, which queues a post you already reviewed and approved outside Telegram; it never posts directly and never moves or deletes anything.
 - **🗑 Discard, ↩️ Unschedule and ⚡ Post now always ask ✅/✖ first**, and so does ⚡ Now in the time picker. The question names the post and its time. ✖ leaves the post and its buttons exactly as they were. (Why: a single stray 🗑 tap on a "Queued ✓" message once killed a scheduled post.)
 - **"Post it now" typed in chat is refused.** Posting immediately is button-only.
 - **Bulk scope follows your words, not the model's.** "Discard all" means waiting drafts only. Scheduled posts are included only when you say "scheduled", "queued" or "everything".
